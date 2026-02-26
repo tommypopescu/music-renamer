@@ -24,21 +24,25 @@
     input[type="text"] { width: 98%; padding:.35rem .45rem; border:1px solid var(--border); background:var(--panel); color:var(--fg); border-radius:6px; }
     table { width:100%; border-collapse: collapse; }
     th, td { text-align:left; padding:8px 10px; border-bottom:1px solid var(--border); vertical-align: top; }
-    th { font-weight:600; }
+    th { font-weight:600; user-select:none; }
+    th.sortable { cursor: pointer; }
+    th.sortable .arrow { margin-left: .35rem; font-size: .9rem; color: var(--muted); }
     pre { background:var(--mono-bg); color:var(--mono-fg); padding:1rem; border-radius:8px; white-space:pre-wrap; }
     .hint { color:var(--muted); font-size:.92rem; margin: .35rem 0 1rem; }
     .w-checkbox { width: 42px; }
     .w-path { min-width: 340px; }
     .w-artist, .w-title { min-width: 220px; }
     .w-date { min-width: 150px; white-space: nowrap; }
+    .w-prev { min-width: 280px; }
+    .muted { color: var(--muted); font-size: .9rem; }
   </style>
 </head>
 <body>
 
   <h1>Music Renamer</h1>
   <div class="hint">
-    Selectează cu checkbox melodiile de redenumit. Poți edita manual <b>Artist</b> și <b>Title</b>. Redenumirea este <b>in‑place</b>
-    (în același folder cu fișierul original).
+    Bifează piesele de redenumit. Poți edita manual <b>Artist</b> și <b>Title</b>. Redenumirea este <b>in‑place</b>
+    (în același folder cu originalul). Poți sorta după „Date/Time”.
   </div>
 
   <div class="toolbar">
@@ -65,25 +69,32 @@
         <th class="w-artist">Artist (edit)</th>
         <th class="w-title">Title (edit)</th>
         <th>Ext</th>
-        <th class="w-date">Date/Time</th>
+        <th class="w-date sortable" onclick="toggleSortByDate()">
+          Date/Time <span class="arrow" id="dateArrow">▼</span>
+        </th>
+        <th class="w-prev">Preview name</th>
       </tr>
     </thead>
     <tbody></tbody>
   </table>
+
+  <div class="muted">Template: <span id="tplText"></span></div>
 
   <h3>Output</h3>
   <pre id="out">Ready.</pre>
 
 <script>
 let CURRENT_ITEMS = [];
+let SORT_DESC = true;              // sort by newest first
+let RENAME_TEMPLATE = "{artist} - {title}"; // default; read from server at load
 
 function $(q){ return document.querySelector(q); }
 
-async function call(url, body) {
+async function call(url, body, method='POST') {
   const res = await fetch(url, {
-    method:'POST',
+    method,
     headers:{'Content-Type':'application/json'},
-    body: JSON.stringify(body || {})
+    body: method === 'GET' ? null : JSON.stringify(body || {})
   });
   try { return await res.json(); }
   catch { return { ok:false, error:'Invalid JSON response' }; }
@@ -93,43 +104,27 @@ function setOut(obj) {
   $('#out').textContent = (obj.ok ? 'OK\n\n' : 'ERROR\n\n') + JSON.stringify(obj, null, 2);
 }
 
-function renderItems(items) {
-  CURRENT_ITEMS = items || [];
-  const tb = document.querySelector('#tbl tbody');
-  tb.innerHTML = '';
+function escapeHtml(s){
+  return (s||'').replace(/[&<>"']/g, (m)=>({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[m]));
+}
 
-  for (let i = 0; i < CURRENT_ITEMS.length; i++) {
-    const it = CURRENT_ITEMS[i];
-    const tr = document.createElement('tr');
+function sanitizeFileName(name){
+  // replică simplă a sanitizării din backend: înlocuiește caracterele interzise cu underscore
+  name = name.trim().replace(/[\\/:*?"<>|]+/g, "_").trim();
+  // curăță ghilimele/brackets la margine
+  return name.replace(/^[ '"–—_\[\]\(\)]+|[ '"–—_\[\]\(\)]+$/g, "");
+}
 
-    tr.innerHTML = `
-      <td class="w-checkbox"><input type="checkbox" data-idx="${i}" ${it.selected ? 'checked' : ''} /></td>
-      <td class="w-path">${it.rel || it.path}</td>
-      <td class="w-artist"><input type="text" value="${escapeHtml(it.artist || '')}" data-idx="${i}" data-field="artist"/></td>
-      <td class="w-title"><input type="text" value="${escapeHtml(it.title || '')}"  data-idx="${i}" data-field="title"/></td>
-      <td>${it.ext || ''}</td>
-      <td class="w-date">${it.mtime_str || ''}</td>
-    `;
-    tb.appendChild(tr);
-  }
+function buildPreviewName(artist, title, ext){
+  const safeArtist = (artist || 'Unknown Artist').trim();
+  const safeTitle  = (title  || 'Unknown Title').trim();
+  let name = RENAME_TEMPLATE.replaceAll("{artist}", safeArtist).replaceAll("{title}", safeTitle).trim();
+  name = sanitizeFileName(name);
+  return name + (ext || "");
+}
 
-  // listeners
-  document.querySelectorAll('input[type="checkbox"][data-idx]').forEach(cb=>{
-    cb.addEventListener('change', (e)=>{
-      const idx = +e.target.getAttribute('data-idx');
-      CURRENT_ITEMS[idx].selected = e.target.checked;
-    });
-  });
-
-  document.querySelectorAll('input[type="text"][data-idx]').forEach(inp=>{
-    inp.addEventListener('input', (e)=>{
-      const idx = +e.target.getAttribute('data-idx');
-      const fld = e.target.getAttribute('data-field');
-      CURRENT_ITEMS[idx][fld] = e.target.value;
-    });
-  });
-
-  syncHeaderChk();
+function sortItems(){
+  CURRENT_ITEMS.sort((a,b)=> SORT_DESC ? (b.mtime - a.mtime) : (a.mtime - b.mtime));
 }
 
 function syncHeaderChk(){
@@ -148,9 +143,70 @@ function toggleSelect(val){
   onChkAll();
 }
 
+function toggleSortByDate(){
+  SORT_DESC = !SORT_DESC;
+  $('#dateArrow').textContent = SORT_DESC ? '▼' : '▲';
+  renderItems(CURRENT_ITEMS, true); // re-render with sorting
+}
+
+function renderItems(items, forceSort=false) {
+  CURRENT_ITEMS = items || [];
+  if (forceSort) sortItems();
+
+  const tb = document.querySelector('#tbl tbody');
+  tb.innerHTML = '';
+
+  for (let i = 0; i < CURRENT_ITEMS.length; i++) {
+    const it = CURRENT_ITEMS[i];
+    const tr = document.createElement('tr');
+
+    const previewName = buildPreviewName(it.artist, it.title, it.ext);
+
+    tr.innerHTML = `
+      <td class="w-checkbox"><input type="checkbox" data-idx="${i}" ${it.selected ? 'checked' : ''} /></td>
+      <td class="w-path">${escapeHtml(it.rel || it.path)}</td>
+      <td class="w-artist"><input type="text" value="${escapeHtml(it.artist || '')}" data-idx="${i}" data-field="artist"/></td>
+      <td class="w-title"><input type="text" value="${escapeHtml(it.title || '')}"  data-idx="${i}" data-field="title"/></td>
+      <td>${escapeHtml(it.ext || '')}</td>
+      <td class="w-date">${escapeHtml(it.mtime_str || '')}</td>
+      <td class="w-prev">${escapeHtml(previewName)}</td>
+    `;
+    tb.appendChild(tr);
+  }
+
+  // listeners
+  document.querySelectorAll('input[type="checkbox"][data-idx]').forEach(cb=>{
+    cb.addEventListener('change', (e)=>{
+      const idx = +e.target.getAttribute('data-idx');
+      CURRENT_ITEMS[idx].selected = e.target.checked;
+    });
+  });
+
+  document.querySelectorAll('input[type="text"][data-idx]').forEach(inp=>{
+    inp.addEventListener('input', (e)=>{
+      const idx = +e.target.getAttribute('data-idx');
+      const fld = e.target.getAttribute('data-field');
+      CURRENT_ITEMS[idx][fld] = e.target.value;
+
+      // update live preview cell
+      const row = e.target.closest('tr');
+      const ext = CURRENT_ITEMS[idx].ext || '';
+      const pn = buildPreviewName(CURRENT_ITEMS[idx].artist, CURRENT_ITEMS[idx].title, ext);
+      row.querySelector('.w-prev').textContent = pn;
+    });
+  });
+
+  syncHeaderChk();
+}
+
 async function scan() {
   const j = await call('/api/scan', {});
-  if (j.ok) renderItems(j.items);
+  if (j.ok){
+    // by default, newest first
+    CURRENT_ITEMS = j.items || [];
+    sortItems();
+    renderItems(CURRENT_ITEMS);
+  }
   setOut(j);
 }
 
@@ -175,12 +231,21 @@ async function doDelete() {
   await scan();
 }
 
-function escapeHtml(s){
-  return (s||'').replace(/[&<>"']/g, (m)=>({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[m]));
+async function loadSettings(){
+  const j = await call('/api/settings', null, 'GET');
+  if (j && j.ok && j.template){
+    RENAME_TEMPLATE = j.template;
+    $('#tplText').textContent = RENAME_TEMPLATE;
+  } else {
+    $('#tplText').textContent = RENAME_TEMPLATE + " (default)";
+  }
 }
 
-// auto-scan la încărcarea paginii
-scan();
+// init
+(async function(){
+  await loadSettings();
+  await scan();
+})();
 </script>
 </body>
 </html>

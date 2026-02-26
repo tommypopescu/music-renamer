@@ -142,6 +142,11 @@ def build_target(artist: str, title: str, ext: str) -> str:
 def index():
     return render_template("index.html")
 
+@app.get("/api/settings")
+def api_settings():
+    """Expose current rename template to the UI."""
+    return jsonify({"ok": True, "template": TEMPLATE})
+
 @app.post("/api/scan")
 def api_scan():
     """List audio items found in /inbox with detected artist/title and file times."""
@@ -150,7 +155,6 @@ def api_scan():
         artist, title = parse_tags(p)
         st = p.stat()
         ts = st.st_mtime
-        # format in local time of the container/host
         dt_str = datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M:%S")
         items.append({
             "path": str(p),
@@ -159,8 +163,8 @@ def api_scan():
             "title": title,
             "ext": p.suffix.lower(),
             "selected": True,           # implicit selectat pentru rename
-            "mtime": ts,                # epoch seconds (util dacă vrei sort)
-            "mtime_str": dt_str         # pentru afișare
+            "mtime": ts,                # epoch seconds (util pt sort)
+            "mtime_str": dt_str         # afișare
         })
     return jsonify({"ok": True, "items": items})
 
