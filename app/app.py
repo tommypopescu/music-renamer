@@ -26,8 +26,9 @@ def index():
 
 @app.post("/api/import")
 def api_import():
-    path = request.json.get("path", inbox_path())
-    code, out, err = run_beet(["-q", "import", path])
+    payload = request.get_json(silent=True) or {}
+    path = payload.get("path") or inbox_path(
+    code, out, err = run_beet(["-q", "import", path]) # type: ignore
     return jsonify({"ok": code == 0, "stdout": out, "stderr": err}), (200 if code == 0 else 500)
 
 @app.post("/api/update")
