@@ -26,9 +26,17 @@ def index():
 
 @app.post("/api/import")
 def api_import():
+    """
+    Import & autotag everything from the inbox folder in quiet mode.
+    'quiet_fallback: asis' from config ensures unattended behavior.
+    Falls back to /inbox when no path is provided or path is empty/None.
+    """
     payload = request.get_json(silent=True) or {}
-    path = payload.get("path") or inbox_path(
-    code, out, err = run_beet(["-q", "import", path]) # type: ignore
+    path = payload.get("path") or inbox_path()  # <-- FIX: inbox_path()
+    # Extra safety: ensure the path exists
+    if not os.path.exists(path):
+        return jsonify({"ok": False, "error": f"Inbox path does not exist: {path}"}), 400
+    code, out, err = run_beet(["-q", "import", path])
     return jsonify({"ok": code == 0, "stdout": out, "stderr": err}), (200 if code == 0 else 500)
 
 @app.post("/api/update")
