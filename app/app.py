@@ -6,76 +6,145 @@ from pathlib import Path
 from flask import Flask, jsonify, render_template, request
 from mutagen import File as MutaFile
 
+# -----------------------------------------------------------------------------
+# App & logging
+# -----------------------------------------------------------------------------
 logging.basicConfig(level=logging.INFO)
 app = Flask(__name__)
 
+# -----------------------------------------------------------------------------
+# Settings (via ENV)
+# -----------------------------------------------------------------------------
 SUPPORT_EXT = {".mp3", ".flac", ".m4a", ".ogg", ".wav", ".opus", ".aac"}
 
-INBOX = os.environ.get("MUSIC_INBOX", "/inbox")
-OUTDIR = os.environ.get("MUSIC_OUTDIR", "/library")  # could be same as INBOX for in-place
+INBOX = os.environ.get("MUSIC_INBOX", "/inbox")          # source folder
+OUTDIR = os.environ.get("MUSIC_OUTDIR", "/library")       # target folder; can be /inbox for in-place
 TEMPLATE = os.environ.get("RENAME_TEMPLATE", "{artist} - {title}")
 
+# -----------------------------------------------------------------------------
+# Regex helpers: remove trailing site tails; detect spammy tag values
+# -----------------------------------------------------------------------------
+SITE_TAIL_RE = re.compile(
+    r"""\s*[-–—]\s*                 # a dash separator
+        (?:www\.)?                  # optional www.
+        [a-z0-9][a-z0-9.-]*\.(?:com|net|org|info|biz|ro|de|fr|it|es|uk)
+        (?:\b.*)?                   # optional tail
+    """,
+    re.IGNORECASE | re.VERBOSE,
+)
+
+BAD_TAG_RE = re.compile(r"(?:www\.|https?://|\.com\b|\.net\b|\.org\b)", re.IGNORECASE)
+
+# -----------------------------------------------------------------------------
+# Helpers
+# -----------------------------------------------------------------------------
 def list_audio_files(root: str):
+    """Yield audio files (by extension) recursively from root."""
     rootp = Path(root)
     for p in sorted(rootp.rglob("*")):
         if p.is_file() and p.suffix.lower() in SUPPORT_EXT:
             yield p
 
-def parse_tags(path: Path):
-    """Return (artist,title) using tags if any; else heuristics from filename."""
+def _clean_base_from_filename(path: Path) -> str:
+    """
+    Take filename stem and remove:
+      1) leading track numbers + separators: '01 - ', '001_', '1.', '03   '
+      2) trailing 'site tails': ' - www.something.com' etc.
+      3) double spaces
+    """
+    base = path.stem
+    base = re.sub(r"^\s*\d+\s*[-_. ]\s*", "", base)
+    base = SITE_TAIL_RE.sub("", base).strip()
+    base = re.sub(r"\s{2,}", " ", base).strip()
+    return base
+
+def _split_artist_title_from_base(base: str) -> tuple[str, str]:
+    """
+    Split a cleaned base string by ' - ' (any dash with optional spaces).
+    If we get >=2 parts: artist = first, title = last; otherwise title=base.
+    Also normalizes strange dashes and trims quotes/brackets.
+    """
+    norm = re.sub(r"[–—]", "-", base)  # normalize em/en dashes to '-'
+    parts = [p.strip() for p in re.split(r"\s*-\s*", norm) if p.strip()]
+    if len(parts) >= 2:
+        artist = parts[0]
+        title = parts[-1]
+    else:
+        artist, title = "", parts[0] if parts else ""
+
+    # Safety: remove any trailing site tail from title and trim junk chars
+    title = SITE_TAIL_RE.sub("", title).strip().strip(" '\"-–—_")
+    artist = artist.strip().strip(" '\"-–—_")
+    return artist, title
+
+def _safe_tag_text(v):
+    if v is None:
+        return ""
+    if isinstance(v, (list, tuple)) and v:
+        return str(v[0])
+    return str(v)
+
+def parse_tags(path: Path) -> tuple[str, str]:
+    """
+    Robust artist/title detection:
+      - derive FIRST from filename (handles site tails + numbers + multiple dashes)
+      - use tags ONLY IF they look clean (no www/http/.com etc.)
+    """
+    # 1) filename-derived
+    base = _clean_base_from_filename(path)
+    fn_artist, fn_title = _split_artist_title_from_base(base)
+
+    artist = fn_artist or "Unknown Artist"
+    title  = fn_title or "Unknown Title"
+
+    # 2) attempt tags (accept only if they aren't 'site-like')
+    tag_artist = tag_title = ""
     try:
         mf = MutaFile(str(path))
+        if mf and getattr(mf, "tags", None):
+            for key in ("artist", "ARTIST", "\xa9ART", "TPE1"):
+                val = _safe_tag_text(mf.tags.get(key))
+                if val:
+                    tag_artist = val.strip()
+                    break
+            for key in ("title", "TITLE", "\xa9nam", "TIT2"):
+                val = _safe_tag_text(mf.tags.get(key))
+                if val:
+                    tag_title = val.strip()
+                    break
     except Exception:
-        mf = None
+        pass
 
-    artist = title = ""
+    if tag_artist and not BAD_TAG_RE.search(tag_artist):
+        artist = tag_artist
+    if tag_title and not BAD_TAG_RE.search(tag_title):
+        title = SITE_TAIL_RE.sub("", tag_title).strip().strip(" '\"-–—_")
 
-    if mf:
-        # Try common tag keys
-        for key in ("artist", "ARTIST", "\xa9ART", "TPE1"):
-            v = mf.tags.get(key) if getattr(mf, "tags", None) else None
-            if v:
-                artist = str(v[0] if isinstance(v, list) else v)
-                break
-        for key in ("title", "TITLE", "\xa9nam", "TIT2"):
-            v = mf.tags.get(key) if getattr(mf, "tags", None) else None
-            if v:
-                title = str(v[0] if isinstance(v, list) else v)
-                break
+    # Final normalization
+    artist = re.sub(r"\s{2,}", " ", artist).strip() or "Unknown Artist"
+    title  = re.sub(r"\s{2,}", " ", title).strip()  or "Unknown Title"
+    return artist, title
 
-    if not artist or not title:
-        base = path.stem
-        # Common pattern: "01 - Artist - Title", "Artist - 01 - Title", "01 Title"
-        # 1) strip leading track numbers & separators
-        base = re.sub(r"^\s*\d+\s*[-_. ]\s*", "", base).strip()
-        # 2) try split "Artist - Title"
-        parts = re.split(r"\s*-\s*", base, maxsplit=1)
-        if len(parts) == 2:
-            cand_artist, cand_title = parts
-            artist = artist or cand_artist.strip()
-            title = title or cand_title.strip()
-        else:
-            # fallback: everything is title
-            title = title or base.strip()
-
-    # Final cleanup: remove any remaining leading numbers in title
-    title = re.sub(r"^\d+[-_. ]*", "", title).strip()
-    return artist or "Unknown Artist", title or "Unknown Title"
-
-def build_target(artist: str, title: str, ext: str):
+def build_target(artist: str, title: str, ext: str) -> str:
+    """Return final file name according to template and sanitize it."""
     safe_artist = artist.strip()
     safe_title  = title.strip()
     name = TEMPLATE.format(artist=safe_artist, title=safe_title).strip()
-    # basic sanitization
+    name = name.strip(" '\"-–—_")
+    # sanitize filename
     name = re.sub(r'[\\/:*?"<>|]+', "_", name)
     return f"{name}{ext.lower()}"
 
+# -----------------------------------------------------------------------------
+# Routes
+# -----------------------------------------------------------------------------
 @app.get("/")
 def index():
     return render_template("index.html")
 
 @app.post("/api/scan")
 def api_scan():
+    """List audio items found in /inbox with detected artist/title."""
     items = []
     for p in list_audio_files(INBOX):
         artist, title = parse_tags(p)
@@ -90,6 +159,7 @@ def api_scan():
 
 @app.post("/api/preview")
 def api_preview():
+    """Compute rename plan (src → dst) based on current template."""
     dest_base = Path(OUTDIR)
     preview = []
     for p in list_audio_files(INBOX):
@@ -101,6 +171,7 @@ def api_preview():
 
 @app.post("/api/apply")
 def api_apply():
+    """Apply rename/move on disk."""
     dest_base = Path(OUTDIR)
     dest_base.mkdir(parents=True, exist_ok=True)
     ops = []
@@ -108,17 +179,21 @@ def api_apply():
         artist, title = parse_tags(p)
         target_name = build_target(artist, title, p.suffix)
         dst = dest_base / target_name
-        # If same dir and same path, skip
-        if p.resolve() == dst.resolve():
-            continue
+        # skip if same location & same name
+        try:
+            if p.resolve() == dst.resolve():
+                continue
+        except Exception:
+            # resolve can fail across mounts; not critical
+            pass
         dst.parent.mkdir(parents=True, exist_ok=True)
-        # move (rename across fs if needed)
         shutil.move(str(p), str(dst))
         ops.append({"from": str(p), "to": str(dst)})
     return jsonify({"ok": True, "moved": ops})
 
 @app.post("/api/delete")
 def api_delete():
+    """Delete selected absolute file paths (one per line from UI)."""
     payload = request.get_json(force=True) or {}
     paths = payload.get("paths") or []
     removed = []
