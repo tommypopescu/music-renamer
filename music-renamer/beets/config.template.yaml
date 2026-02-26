@@ -1,0 +1,24 @@
+library: /config/library.db
+directory: /library
+
+import:
+  write: yes
+  move: yes
+  log: /config/import.log
+  quiet_fallback: asis
+
+plugins: fetchart lastgenre mbsync
+
+fetchart:
+  auto: yes
+  minwidth: 600
+
+lastgenre:
+  auto: yes
+  count: 1
+
+# Strict flat naming across the entire library
+paths:
+  default: $artist - $title
+  singleton: $artist - $title
+  comp: $artist - $title
