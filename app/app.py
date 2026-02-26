@@ -87,42 +87,50 @@ def _safe_tag_text(v):
 def parse_tags(path: Path) -> tuple[str, str]:
     """
     Robust artist/title detection:
-      - derive FIRST from filename (handles site tails + numbers + multiple dashes)
-      - use tags ONLY IF they look clean (no www/http/.com etc.)
+      - Derive FIRST and FOREMOST from filename (site tails + numbers + dashes).
+      - DO NOT override with tags unless filename derivation failed completely.
+      - Optionally, strip numeric BPM-like suffixes from title.
     """
-    # 1) filename-derived
+    # 1) filename-derived (principalul adevăr)
     base = _clean_base_from_filename(path)
     fn_artist, fn_title = _split_artist_title_from_base(base)
 
-    artist = fn_artist or "Unknown Artist"
-    title  = fn_title or "Unknown Title"
+    artist = (fn_artist or "").strip()
+    title  = (fn_title or "").strip()
 
-    # 2) attempt tags (accept only if they aren't 'site-like')
-    tag_artist = tag_title = ""
-    try:
-        mf = MutaFile(str(path))
-        if mf and getattr(mf, "tags", None):
-            for key in ("artist", "ARTIST", "\xa9ART", "TPE1"):
-                val = _safe_tag_text(mf.tags.get(key))
-                if val:
-                    tag_artist = val.strip()
-                    break
-            for key in ("title", "TITLE", "\xa9nam", "TIT2"):
-                val = _safe_tag_text(mf.tags.get(key))
-                if val:
-                    tag_title = val.strip()
-                    break
-    except Exception:
-        pass
+    # 2) tags ca fallback doar dacă filename nu ne-a dat nimic util
+    if not artist or not title:
+        tag_artist = tag_title = ""
+        try:
+            mf = MutaFile(str(path))
+            if mf and getattr(mf, "tags", None):
+                for key in ("artist", "ARTIST", "\xa9ART", "TPE1"):
+                    val = _safe_tag_text(mf.tags.get(key))
+                    if val:
+                        tag_artist = val.strip()
+                        break
+                for key in ("title", "TITLE", "\xa9nam", "TIT2"):
+                    val = _safe_tag_text(mf.tags.get(key))
+                    if val:
+                        tag_title = val.strip()
+                        break
+        except Exception:
+            pass
 
-    if tag_artist and not BAD_TAG_RE.search(tag_artist):
-        artist = tag_artist
-    if tag_title and not BAD_TAG_RE.search(tag_title):
-        title = SITE_TAIL_RE.sub("", tag_title).strip().strip(" '\"-–—_")
+        # Acceptăm tag-uri doar ca fallback, și doar dacă nu sunt "site-ish"
+        if not artist and tag_artist and not BAD_TAG_RE.search(tag_artist):
+            artist = tag_artist
+        if not title and tag_title and not BAD_TAG_RE.search(tag_title):
+            # curățăm orice site tail eventual rămas
+            title = SITE_TAIL_RE.sub("", tag_title).strip()
 
-    # Final normalization
+    # 3) (Opțional) Taie sufixe numerice tip BPM din titlu: ex. "… (Clean) 121" -> "… (Clean)"
+    #    Comentează cele două linii dacă NU vrei regula asta.
+    title = re.sub(r"\s+\(?\b\d{2,3}\b\)?$", "", title).strip()
+
+    # 4) Normalizare finală
     artist = re.sub(r"\s{2,}", " ", artist).strip() or "Unknown Artist"
-    title  = re.sub(r"\s{2,}", " ", title).strip()  or "Unknown Title"
+    title  = re.sub(r"\s{2,}", " ", title ).strip() or "Unknown Title"
     return artist, title
 
 def build_target(artist: str, title: str, ext: str) -> str:
