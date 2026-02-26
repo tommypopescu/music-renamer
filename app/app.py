@@ -1,7 +1,8 @@
 import os
 import subprocess
 from flask import Flask, jsonify, render_template, request
-
+import logging
+logging.basicConfig(level=logging.INFO)
 app = Flask(__name__)
 
 def run_beet(args, timeout=3600):
@@ -10,6 +11,7 @@ def run_beet(args, timeout=3600):
     We prefer quiet mode where applicable to avoid interactive prompts.
     """
     cmd = ["beet"] + args
+    app.logger.info("Running: %s", " ".join(cmd))  # <— log the actual command
     proc = subprocess.Popen(
         cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
     )
@@ -55,20 +57,23 @@ def api_apply_rename():
     return jsonify({"ok": code == 0, "stdout": out, "stderr": err}), (200 if code == 0 else 500)
 
 @app.post("/api/delete")
-def api_delete():
-    payload = request.get_json(force=True) or {}
-    query = (payload.get("query") or "").strip()
-    delete_files = bool(payload.get("delete_files", False))
-    if not query:
-        return jsonify({"ok": False, "error": "Query must not be empty."}), 400
+ def api_delete():
+     payload = request.get_json(force=True) or {}
+     query = (payload.get("query") or "").strip()
+     delete_files = bool(payload.get("delete_files", False))
+     if not query:
+         return jsonify({"ok": False, "error": "Query must not be empty."}), 400
 
-    args = ["remove", "-f"]
-    if delete_files:
-        args.append("-d")
-    args.append(query)
++    # Safety: disallow options being injected as the first token (e.g., "-q ...")
++    if query.startswith("-"):
++        return jsonify({"ok": False, "error": "Query must not start with '-' (options are not allowed)."}), 400
+     args = ["remove", "-f"]
+     if delete_files:
+         args.append("-d")
+     args.append(query)
 
-    code, out, err = run_beet(args)
-    return jsonify({"ok": code == 0, "stdout": out, "stderr": err}), (200 if code == 0 else 500)
+     code, out, err = run_beet(args)
+     return jsonify({"ok": code == 0, "stdout": out, "stderr": err}), (200 if code == 0 else 500)
 
 @app.get("/api/config-paths")
 def api_config_paths():
