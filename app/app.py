@@ -1,99 +1,130 @@
 import os
-import subprocess
+import re
+import shutil
 import logging
+from pathlib import Path
 from flask import Flask, jsonify, render_template, request
+from mutagen import File as MutaFile
 
 logging.basicConfig(level=logging.INFO)
 app = Flask(__name__)
 
-def run_beet(args, timeout=3600):
-    cmd = ["beet"] + args
-    app.logger.info("Running: %s", " ".join(cmd))
-    proc = subprocess.Popen(
-        cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
-    )
-    out, err = proc.communicate(timeout=timeout)
-    return proc.returncode, out.strip(), err.strip()
+SUPPORT_EXT = {".mp3", ".flac", ".m4a", ".ogg", ".wav", ".opus", ".aac"}
 
-def inbox_path():
-    return os.environ.get("MUSIC_INBOX", "/inbox")
+INBOX = os.environ.get("MUSIC_INBOX", "/inbox")
+OUTDIR = os.environ.get("MUSIC_OUTDIR", "/library")  # could be same as INBOX for in-place
+TEMPLATE = os.environ.get("RENAME_TEMPLATE", "{artist} - {title}")
+
+def list_audio_files(root: str):
+    rootp = Path(root)
+    for p in sorted(rootp.rglob("*")):
+        if p.is_file() and p.suffix.lower() in SUPPORT_EXT:
+            yield p
+
+def parse_tags(path: Path):
+    """Return (artist,title) using tags if any; else heuristics from filename."""
+    try:
+        mf = MutaFile(str(path))
+    except Exception:
+        mf = None
+
+    artist = title = ""
+
+    if mf:
+        # Try common tag keys
+        for key in ("artist", "ARTIST", "\xa9ART", "TPE1"):
+            v = mf.tags.get(key) if getattr(mf, "tags", None) else None
+            if v:
+                artist = str(v[0] if isinstance(v, list) else v)
+                break
+        for key in ("title", "TITLE", "\xa9nam", "TIT2"):
+            v = mf.tags.get(key) if getattr(mf, "tags", None) else None
+            if v:
+                title = str(v[0] if isinstance(v, list) else v)
+                break
+
+    if not artist or not title:
+        base = path.stem
+        # Common pattern: "01 - Artist - Title", "Artist - 01 - Title", "01 Title"
+        # 1) strip leading track numbers & separators
+        base = re.sub(r"^\s*\d+\s*[-_. ]\s*", "", base).strip()
+        # 2) try split "Artist - Title"
+        parts = re.split(r"\s*-\s*", base, maxsplit=1)
+        if len(parts) == 2:
+            cand_artist, cand_title = parts
+            artist = artist or cand_artist.strip()
+            title = title or cand_title.strip()
+        else:
+            # fallback: everything is title
+            title = title or base.strip()
+
+    # Final cleanup: remove any remaining leading numbers in title
+    title = re.sub(r"^\d+[-_. ]*", "", title).strip()
+    return artist or "Unknown Artist", title or "Unknown Title"
+
+def build_target(artist: str, title: str, ext: str):
+    safe_artist = artist.strip()
+    safe_title  = title.strip()
+    name = TEMPLATE.format(artist=safe_artist, title=safe_title).strip()
+    # basic sanitization
+    name = re.sub(r'[\\/:*?"<>|]+', "_", name)
+    return f"{name}{ext.lower()}"
 
 @app.get("/")
 def index():
     return render_template("index.html")
 
-# ---------------------------------------------------------
-# LOAD FILES INTO BEETS LIBRARY (NO TAGGING, NO MATCHING)
-# ---------------------------------------------------------
-@app.post("/api/load")
-def api_load():
-    path = inbox_path()
-    if not os.path.exists(path):
-        return jsonify({"ok": False, "error": f"Inbox path does not exist: {path}"}), 400
+@app.post("/api/scan")
+def api_scan():
+    items = []
+    for p in list_audio_files(INBOX):
+        artist, title = parse_tags(p)
+        items.append({
+            "path": str(p),
+            "rel": str(p.relative_to(INBOX)),
+            "artist": artist,
+            "title": title,
+            "ext": p.suffix.lower(),
+        })
+    return jsonify({"ok": True, "items": items})
 
-    # Import WITHOUT tagging using -A
-    code, out, err = run_beet(["import", "-A", path])
-    return jsonify({"ok": code == 0, "stdout": out, "stderr": err}), (200 if code == 0 else 500)
+@app.post("/api/preview")
+def api_preview():
+    dest_base = Path(OUTDIR)
+    preview = []
+    for p in list_audio_files(INBOX):
+        artist, title = parse_tags(p)
+        target_name = build_target(artist, title, p.suffix)
+        target_path = dest_base / target_name
+        preview.append({"src": str(p), "dst": str(target_path)})
+    return jsonify({"ok": True, "preview": preview})
 
-# ---------------------------------------------------------
-# CLEAN TITLES (remove leading numbers)
-# ---------------------------------------------------------
-@app.post("/api/clean-titles")
-def api_clean_titles():
-    code1, out1, err1 = run_beet([
-        "modify", "-y",
-        "title=^\\d+[-_\\. ]*(.*)$",
-        "title=$1"
-    ])
-    if code1 != 0:
-        return jsonify({"ok": False, "step": "modify", "stdout": out1, "stderr": err1}), 500
+@app.post("/api/apply")
+def api_apply():
+    dest_base = Path(OUTDIR)
+    dest_base.mkdir(parents=True, exist_ok=True)
+    ops = []
+    for p in list_audio_files(INBOX):
+        artist, title = parse_tags(p)
+        target_name = build_target(artist, title, p.suffix)
+        dst = dest_base / target_name
+        # If same dir and same path, skip
+        if p.resolve() == dst.resolve():
+            continue
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        # move (rename across fs if needed)
+        shutil.move(str(p), str(dst))
+        ops.append({"from": str(p), "to": str(dst)})
+    return jsonify({"ok": True, "moved": ops})
 
-    code2, out2, err2 = run_beet(["move"])
-    return jsonify({
-        "ok": code2 == 0,
-        "modify": out1 + "\n" + err1,
-        "move": out2 + "\n" + err2
-    }), (200 if code2 == 0 else 500)
-
-# ---------------------------------------------------------
-# PREVIEW / APPLY RENAME
-# ---------------------------------------------------------
-@app.post("/api/preview-rename")
-def api_preview_rename():
-    code, out, err = run_beet(["move", "-p"])
-    return jsonify({"ok": code == 0, "stdout": out, "stderr": err}), 200 if code == 0 else 500
-
-@app.post("/api/apply-rename")
-def api_apply_rename():
-    code, out, err = run_beet(["move"])
-    return jsonify({"ok": code == 0, "stdout": out, "stderr": err}), 200 if code == 0 else 500
-
-# ---------------------------------------------------------
-# DELETE
-# ---------------------------------------------------------
 @app.post("/api/delete")
 def api_delete():
     payload = request.get_json(force=True) or {}
-    query = (payload.get("query") or "").strip()
-    delete_files = bool(payload.get("delete_files", False))
-
-    if not query:
-        return jsonify({"ok": False, "error": "Query must not be empty."}), 400
-    if query.startswith("-"):
-        return jsonify({"ok": False, "error": "Query cannot start with '-'"}), 400
-
-    args = ["remove", "-f"]
-    if delete_files:
-        args.append("-d")
-    args.append(query)
-
-    code, out, err = run_beet(args)
-    return jsonify({"ok": code == 0, "stdout": out, "stderr": err}), 200 if code == 0 else 500
-
-@app.get("/api/config-paths")
-def api_config_paths():
-    return jsonify({
-        "inbox": inbox_path(),
-        "library": "/library",
-        "config": "/config"
-    })
+    paths = payload.get("paths") or []
+    removed = []
+    for s in paths:
+        p = Path(s)
+        if p.exists() and p.is_file():
+            p.unlink()
+            removed.append(s)
+    return jsonify({"ok": True, "removed": removed})

@@ -1,69 +1,98 @@
 <!doctype html>
 <html lang="en">
 <head>
-    <meta charset="utf-8"/>
-    <title>Music Renamer</title>
-    <meta name="viewport" content="width=device-width, initial-scale=1"/>
-    <style>
-        body { font-family: system-ui, Arial, sans-serif; margin: 2rem; }
-        button { margin-right: 1rem; margin-bottom: 1rem; padding: .6rem 1rem; }
-        input[type="text"] { width: 420px; padding: .4rem; }
-        pre { background:#111; color:#0f0; padding:1rem; border-radius:8px; white-space:pre-wrap; }
-        .danger { background:#8b0000; color:#fff; }
-        .row { margin-bottom: 1rem; }
-    </style>
+  <meta charset="utf-8"/>
+  <title>Music Renamer (no DB)</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <style>
+    body { font-family: system-ui, Arial, sans-serif; margin: 2rem; }
+    button { margin-right: 1rem; margin-bottom: 1rem; padding: .6rem 1rem; }
+    input[type="text"] { width: 600px; padding: .4rem; }
+    pre { background:#111; color:#0f0; padding:1rem; border-radius:8px; white-space:pre-wrap; }
+    .danger { background:#8b0000; color:#fff; }
+    .row { margin-bottom: 1rem; }
+    table { border-collapse: collapse; margin-top: 1rem; width: 100%; }
+    th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid #eee; }
+    .small { font-size: .9rem; color: #444; }
+  </style>
 </head>
-
 <body>
+  <h1>Music Renamer</h1>
+  <p>This LAN-only UI renames files from <code>/inbox</code> using tags or filename heuristics. No database.</p>
 
-<h1>Music Renamer</h1>
-<p>This LAN-only UI loads files, cleans titles and renames tracks using beets.</p>
+  <div class="row">
+    <button onclick="scan()">Scan</button>
+    <button onclick="preview()">Preview rename</button>
+    <button onclick="applyRename()">Apply rename</button>
+  </div>
 
-<h2>Load Files</h2>
-<button onclick="call('/api/load', {})">Load files from /inbox (no tagging)</button>
+  <h3>Delete selected files</h3>
+  <div class="row small">Paste absolute paths (one per line) you want to delete:</div>
+  <textarea id="delpaths" rows="4" style="width:100%;"></textarea>
+  <div class="row">
+    <button class="danger" onclick="doDelete()">Delete</button>
+  </div>
 
-<h2>Title Cleanup</h2>
-<button onclick="call('/api/clean-titles', {})">Clean Titles (remove leading numbers)</button>
+  <h3>Items</h3>
+  <table id="tbl"><thead>
+    <tr><th>File</th><th>Artist</th><th>Title</th><th>Ext</th></tr>
+  </thead><tbody></tbody></table>
 
-<h2>Rename Files</h2>
-<button onclick="call('/api/preview-rename', {})">Preview rename</button>
-<button onclick="call('/api/apply-rename', {})">Apply rename</button>
-
-<h2>Delete from Library</h2>
-<div class="row">
-    <label>Beets query:</label>
-    <input id="delq" type="text" placeholder="e.g. artist:Prodigy title:Firestarter"/>
-    <label><input id="delfiles" type="checkbox"/> Also delete files from disk</label>
-</div>
-<button class="danger" onclick="del()">Delete</button>
-
-<h2>Output</h2>
-<pre id="out"></pre>
+  <h3>Output</h3>
+  <pre id="out"></pre>
 
 <script>
 async function call(url, body) {
-    const res = await fetch(url, {
-        method:'POST',
-        headers:{'Content-Type':'application/json'},
-        body: JSON.stringify(body || {})
-    });
-    const j = await res.json();
-    document.getElementById('out').textContent =
-        (j.ok ? "OK\n\n" : "ERROR\n\n") +
-        (j.stdout || j.modify || "") + "\n" +
-        (j.stderr || j.move || j.error || "");
+  const res = await fetch(url, {
+    method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body: JSON.stringify(body || {})
+  });
+  return await res.json();
 }
 
-async function del() {
-    const q = document.getElementById('delq').value.trim();
-    const df = document.getElementById('delfiles').checked;
+function setOut(obj) {
+  document.getElementById('out').textContent =
+    (obj.ok ? 'OK\n\n' : 'ERROR\n\n') + JSON.stringify(obj, null, 2);
+}
 
-    if (!q) { alert("Please enter a query."); return; }
-    if (!confirm("Are you sure? This cannot be undone.")) return;
+function renderItems(items) {
+  const tb = document.querySelector('#tbl tbody');
+  tb.innerHTML = '';
+  for (const it of items) {
+    const tr = document.createElement('tr');
+    tr.innerHTML = `<td>${it.rel || it.path}</td><td>${it.artist||''}</td><td>${it.title||''}</td><td>${it.ext||''}</td>`;
+    tb.appendChild(tr);
+  }
+}
 
-    await call('/api/delete', {query: q, delete_files: df});
+async function scan() {
+  const j = await call('/api/scan', {});
+  if (j.ok) renderItems(j.items || []);
+  setOut(j);
+}
+
+async function preview() {
+  const j = await call('/api/preview', {});
+  setOut(j);
+}
+
+async function applyRename() {
+  const j = await call('/api/apply', {});
+  setOut(j);
+  // after move, refresh list
+  await scan();
+}
+
+async function doDelete() {
+  const raw = document.getElementById('delpaths').value.trim();
+  const paths = raw ? raw.split(/\r?\n/).map(s => s.trim()).filter(Boolean) : [];
+  if (!paths.length) { alert('Please paste one or more absolute paths.'); return; }
+  if (!confirm('Are you sure? This cannot be undone.')) return;
+  const j = await call('/api/delete', {paths});
+  setOut(j);
+  await scan();
 }
 </script>
-
 </body>
 </html>

@@ -1,30 +1,16 @@
 services:
   music-renamer:
-    image: ghcr.io/OWNER/muserrenamer:latest   # TODO: replace OWNER with your org/user
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
     container_name: music-renamer
     restart: unless-stopped
     environment:
-      BEETSDIR: /config
       MUSIC_INBOX: /inbox
+      MUSIC_OUTDIR: /library      # dacă vrei in-place, pune MUSIC_OUTDIR=/inbox
+      RENAME_TEMPLATE: "{artist} - {title}"   # șablon
     volumes:
-      - ./data/config:/config
-      - /mnt/music-inbox:/inbox        # downloads in LAN
-      - /mnt/music-library:/library    # organized library in LAN
+      - /mnt/music-inbox:/inbox
+      - /mnt/music-library:/library
     ports:
-      - "8080:8080"   # expose only in LAN; restrict on firewall/router
-    labels:
-      - "wud.tag.include=latest"
-
-  wud:
-    image: getwud/wud:latest
-    container_name: wud
-    restart: unless-stopped
-    ports:
-      - "3000:3000"   # WUD dashboard (LAN)
-    volumes:
-      - /var/run/docker.sock:/var/run/docker.sock
-    environment:
-      # When a new image is available in GHCR, WUD can run docker-compose update.
-      - WUD_TRIGGER_DOCKERCOMPOSE_UPDATE=true
-      - WUD_TRIGGER_DOCKERCOMPOSE_FILE=${COMPOSE_FILE:-./compose.yaml}
-      - WUD_TRIGGER_DOCKERCOMPOSE_PRUNE=true
+      - "8085:8080"
