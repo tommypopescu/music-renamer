@@ -43,7 +43,7 @@ def api_import():
     path = payload.get("path") or inbox_path()
     if not os.path.exists(path):
         return jsonify({"ok": False, "error": f"Inbox path does not exist: {path}"}), 400
-    code, out, err = run_beet(["import", path])
+    code, out, err = run_beet(["-q", "import", path])
     return jsonify({"ok": code == 0, "stdout": out, "stderr": err}), (200 if code == 0 else 500)
 
 @app.post("/api/update")
@@ -52,7 +52,7 @@ def api_update():
     Refresh metadata from MusicBrainz for the entire library using mbsync.
     Requires the 'mbsync' plugin enabled in config.
     """
-    code, out, err = run_beet(["mbsync"])
+    code, out, err = run_beet(["-q", "mbsync"])
     return jsonify({"ok": code == 0, "stdout": out, "stderr": err}), (200 if code == 0 else 500)
 
 @app.post("/api/preview-rename")
@@ -68,7 +68,7 @@ def api_apply_rename():
     """
     Apply renames/moves to match the configured path templates.
     """
-    code, out, err = run_beet(["move"])
+    code, out, err = run_beet(["-q", "move"])
     return jsonify({"ok": code == 0, "stdout": out, "stderr": err}), (200 if code == 0 else 500)
 
 @app.post("/api/delete")
