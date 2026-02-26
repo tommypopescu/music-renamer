@@ -3,6 +3,7 @@ import re
 import shutil
 import logging
 from pathlib import Path
+from datetime import datetime
 from flask import Flask, jsonify, render_template, request
 from mutagen import File as MutaFile
 
@@ -13,12 +14,11 @@ logging.basicConfig(level=logging.INFO)
 app = Flask(__name__)
 
 # -----------------------------------------------------------------------------
-# Settings (via ENV)
+# Settings
 # -----------------------------------------------------------------------------
 SUPPORT_EXT = {".mp3", ".flac", ".m4a", ".ogg", ".wav", ".opus", ".aac"}
 
-INBOX = os.environ.get("MUSIC_INBOX", "/inbox")          # source folder
-OUTDIR = os.environ.get("MUSIC_OUTDIR", "/library")       # target folder; can be /inbox for in-place
+INBOX = os.environ.get("MUSIC_INBOX", "/inbox")          # sursa scanării
 TEMPLATE = os.environ.get("RENAME_TEMPLATE", "{artist} - {title}")
 
 # -----------------------------------------------------------------------------
@@ -47,7 +47,7 @@ def list_audio_files(root: str):
 
 def _clean_base_from_filename(path: Path) -> str:
     """
-    Take filename stem and remove:
+    From filename stem remove:
       1) leading track numbers + separators: '01 - ', '001_', '1.', '03   '
       2) trailing 'site tails': ' - www.something.com' etc.
       3) double spaces
@@ -144,37 +144,47 @@ def index():
 
 @app.post("/api/scan")
 def api_scan():
-    """List audio items found in /inbox with detected artist/title."""
+    """List audio items found in /inbox with detected artist/title and file times."""
     items = []
     for p in list_audio_files(INBOX):
         artist, title = parse_tags(p)
+        st = p.stat()
+        ts = st.st_mtime
+        # format in local time of the container/host
+        dt_str = datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M:%S")
         items.append({
             "path": str(p),
             "rel": str(p.relative_to(INBOX)),
             "artist": artist,
             "title": title,
             "ext": p.suffix.lower(),
+            "selected": True,           # implicit selectat pentru rename
+            "mtime": ts,                # epoch seconds (util dacă vrei sort)
+            "mtime_str": dt_str         # pentru afișare
         })
     return jsonify({"ok": True, "items": items})
 
 @app.post("/api/preview")
 def api_preview():
     """
-    Use manual edits if provided.
-    Body: { items: [ {path, artist, title, ext}, ... ] }
+    Use manual edits and selection if provided.
+    Body: { items: [ {path, artist, title, ext, selected}, ... ] }
+    Redenumire IN-PLACE: ținta e în același director cu sursa.
     """
     payload = request.get_json(force=True) or {}
     items = payload.get("items") or []
 
     preview = []
     for it in items:
+        if not it.get("selected", False):
+            continue
         p = Path(it["path"])
         artist = it.get("artist") or "Unknown Artist"
         title  = it.get("title")  or "Unknown Title"
         ext    = it.get("ext")    or p.suffix.lower()
 
         target_name = build_target(artist, title, ext)
-        target_path = Path(OUTDIR) / target_name
+        target_path = p.parent / target_name  # IN-PLACE
 
         preview.append({ "src": str(p), "dst": str(target_path) })
 
@@ -182,15 +192,19 @@ def api_preview():
 
 @app.post("/api/apply")
 def api_apply():
+    """
+    Apply rename/move on disk for SELECTED items only.
+    Redenumire IN-PLACE: ținta e în același director cu sursa.
+    """
     payload = request.get_json(force=True) or {}
     items = payload.get("items") or []
-
-    dest = Path(OUTDIR)
-    dest.mkdir(parents=True, exist_ok=True)
 
     moved = []
 
     for it in items:
+        if not it.get("selected", False):
+            continue
+
         p = Path(it["path"])
         if not p.exists():
             continue
@@ -200,7 +214,14 @@ def api_apply():
         ext    = it.get("ext")    or p.suffix.lower()
 
         target_name = build_target(artist, title, ext)
-        dst = dest / target_name
+        dst = p.parent / target_name  # IN-PLACE
+
+        try:
+            # skip dacă numele rămâne identic
+            if p.resolve() == dst.resolve():
+                continue
+        except Exception:
+            pass
 
         dst.parent.mkdir(parents=True, exist_ok=True)
         shutil.move(str(p), str(dst))
