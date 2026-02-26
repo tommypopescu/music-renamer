@@ -173,93 +173,112 @@ def api_preview():
     """
     Primește { items: [...] }, afișează planul in-place și marchează coliziunile.
     """
-    payload = request.get_json(force=True) or {}
-    items = payload.get("items") or []
+    try:
+        payload = request.get_json(force=True) or {}
+        items = payload.get("items") or []
 
-    preview = []
-    for it in items:
-        if not it.get("selected", False):
-            continue
-        p = Path(it["path"])
-        artist = it.get("artist") or "Unknown Artist"
-        title  = it.get("title")  or "Unknown Title"
-        ext    = it.get("ext")    or p.suffix.lower()
+        preview = []
+        for it in items:
+            if not it.get("selected", False):
+                continue
+            p = Path(it["path"])
+            if not p.exists():
+                preview.append({"src": str(it.get("path")), "dst": None, "collision": False, "missing": True})
+                continue
 
-        target_name = build_target(artist, title, ext)
-        target_path = p.parent / target_name
+            artist = it.get("artist") or "Unknown Artist"
+            title  = it.get("title")  or "Unknown Title"
+            ext    = it.get("ext")    or p.suffix.lower()
 
-        collision = target_path.exists() and (p.resolve() != target_path.resolve())
-        preview.append({
-            "src": str(p),
-            "dst": str(target_path),
-            "collision": bool(collision)
-        })
+            target_name = build_target(artist, title, ext)
+            target_path = p.parent / target_name
 
-    return jsonify({"ok": True, "preview": preview})
+            # coliziune = există alt fișier cu numele propus, diferit de src
+            collision = target_path.exists() and (p.resolve() != target_path.resolve())
+
+            preview.append({
+                "src": str(p),
+                "dst": str(target_path),
+                "collision": bool(collision),
+                "missing": False
+            })
+
+        return jsonify({"ok": True, "preview": preview})
+
+    except Exception as e:
+        app.logger.exception("Fatal error in /api/preview")
+        return jsonify({"ok": False, "error": f"/api/preview failed: {e}"}), 500
 
 @app.post("/api/apply")
 def api_apply():
     """
     Apply rename in-place pentru elementele SELECTATE.
-    Returnează moved/skipped/failed cu motivul.
+    Returnează moved/skipped/failed cu motivul (mereu JSON).
     """
-    payload = request.get_json(force=True) or {}
-    items = payload.get("items") or []
+    try:
+        payload = request.get_json(force=True) or {}
+        items = payload.get("items") or []
 
-    moved, skipped, failed = [], [], []
+        moved, skipped, failed = [], [], []
 
-    def unique_target(dst: Path) -> Path:
-        """Dacă există deja, găsește 'name (1).ext', 'name (2).ext', ..."""
-        if not dst.exists():
-            return dst
-        stem = dst.stem
-        suf = dst.suffix
-        i = 1
-        while True:
-            cand = dst.with_name(f"{stem} ({i}){suf}")
-            if not cand.exists():
-                return cand
-            i += 1
+        def unique_target(dst: Path) -> Path:
+            """Dacă 'dst' există, găsește 'name (1).ext', 'name (2).ext', ..."""
+            if not dst.exists():
+                return dst
+            stem, suf, i = dst.stem, dst.suffix, 1
+            while True:
+                cand = dst.with_name(f"{stem} ({i}){suf}")
+                if not cand.exists():
+                    return cand
+                i += 1
 
-    for it in items:
-        if not it.get("selected", False):
-            skipped.append({"path": it.get("path"), "reason": "not selected"})
-            continue
+        for it in items:
+            # trebuie bifat în UI
+            if not it.get("selected", False):
+                skipped.append({"path": it.get("path"), "reason": "not selected"})
+                continue
 
-        try:
-            p = Path(it["path"])
-        except Exception as e:
-            failed.append({"path": str(it.get("path")), "error": f"bad path: {e}"})
-            continue
+            # cale sursă validă?
+            try:
+                p = Path(it["path"])
+            except Exception as e:
+                failed.append({"path": str(it.get("path")), "error": f"bad path: {e}"})
+                continue
 
-        if not p.exists() or not p.is_file():
-            failed.append({"path": str(p), "error": "source does not exist"})
-            continue
+            if not p.exists() or not p.is_file():
+                failed.append({"path": str(p), "error": "source does not exist"})
+                continue
 
-        artist = (it.get("artist") or "Unknown Artist").strip()
-        title  = (it.get("title")  or "Unknown Title").strip()
-        ext    = (it.get("ext")    or p.suffix).lower()
+            artist = (it.get("artist") or "Unknown Artist").strip()
+            title  = (it.get("title")  or "Unknown Title").strip()
+            ext    = (it.get("ext")    or p.suffix).lower()
 
-        target_name = build_target(artist, title, ext)
-        dst = p.parent / target_name
+            # numele țintă propus
+            target_name = build_target(artist, title, ext)
+            dst = p.parent / target_name
 
-        # dacă numele e identic, nu are sens să mutăm
-        if p.name == dst.name:
-            skipped.append({"path": str(p), "reason": "same name"})
-            continue
+            # dacă ar rămâne același nume, nu are sens
+            if p.name == dst.name:
+                skipped.append({"path": str(p), "reason": "same name"})
+                continue
 
-        # dacă ținta există, găsim un nume liber
-        dst_final = unique_target(dst)
+            # dacă există alt fișier cu același nume, caută nume liber
+            dst_final = unique_target(dst)
 
-        try:
-            app.logger.info("Rename: %s  ->  %s", p, dst_final)
-            # în același folder: atomic replace/rename
-            os.replace(p, dst_final)
-            moved.append({"from": str(p), "to": str(dst_final)})
-        except Exception as e:
-            failed.append({"path": str(p), "error": str(e)})
+            try:
+                app.logger.info("Rename: %s -> %s", p, dst_final)
+                os.replace(str(p), str(dst_final))  # atomic in-place
+                moved.append({"from": str(p), "to": str(dst_final)})
+            except Exception as e:
+                app.logger.exception("Rename failed: %s -> %s", p, dst_final)
+                failed.append({"path": str(p), "error": str(e)})
 
-    return jsonify({"ok": True, "moved": moved, "skipped": skipped, "failed": failed})
+        return jsonify({"ok": True, "moved": moved, "skipped": skipped, "failed": failed})
+
+    except Exception as e:
+        # catch-all: niciodată HTML; întoarcem JSON diagnostic
+        app.logger.exception("Fatal error in /api/apply")
+        return jsonify({"ok": False, "error": f"/api/apply failed: {e}"}), 500
 
 @app.post("/api/delete")
 def api_delete():
