@@ -171,9 +171,7 @@ def api_scan():
 @app.post("/api/preview")
 def api_preview():
     """
-    Use manual edits and selection if provided.
-    Body: { items: [ {path, artist, title, ext, selected}, ... ] }
-    Redenumire IN-PLACE: ținta e în același director cu sursa.
+    Primește { items: [...] }, afișează planul in-place și marchează coliziunile.
     """
     payload = request.get_json(force=True) or {}
     items = payload.get("items") or []
@@ -188,50 +186,80 @@ def api_preview():
         ext    = it.get("ext")    or p.suffix.lower()
 
         target_name = build_target(artist, title, ext)
-        target_path = p.parent / target_name  # IN-PLACE
+        target_path = p.parent / target_name
 
-        preview.append({ "src": str(p), "dst": str(target_path) })
+        collision = target_path.exists() and (p.resolve() != target_path.resolve())
+        preview.append({
+            "src": str(p),
+            "dst": str(target_path),
+            "collision": bool(collision)
+        })
 
     return jsonify({"ok": True, "preview": preview})
 
 @app.post("/api/apply")
 def api_apply():
     """
-    Apply rename/move on disk for SELECTED items only.
-    Redenumire IN-PLACE: ținta e în același director cu sursa.
+    Apply rename in-place pentru elementele SELECTATE.
+    Returnează moved/skipped/failed cu motivul.
     """
     payload = request.get_json(force=True) or {}
     items = payload.get("items") or []
 
-    moved = []
+    moved, skipped, failed = [], [], []
+
+    def unique_target(dst: Path) -> Path:
+        """Dacă există deja, găsește 'name (1).ext', 'name (2).ext', ..."""
+        if not dst.exists():
+            return dst
+        stem = dst.stem
+        suf = dst.suffix
+        i = 1
+        while True:
+            cand = dst.with_name(f"{stem} ({i}){suf}")
+            if not cand.exists():
+                return cand
+            i += 1
 
     for it in items:
         if not it.get("selected", False):
+            skipped.append({"path": it.get("path"), "reason": "not selected"})
             continue
-
-        p = Path(it["path"])
-        if not p.exists():
-            continue
-
-        artist = it.get("artist") or "Unknown Artist"
-        title  = it.get("title")  or "Unknown Title"
-        ext    = it.get("ext")    or p.suffix.lower()
-
-        target_name = build_target(artist, title, ext)
-        dst = p.parent / target_name  # IN-PLACE
 
         try:
-            # skip dacă numele rămâne identic
-            if p.resolve() == dst.resolve():
-                continue
-        except Exception:
-            pass
+            p = Path(it["path"])
+        except Exception as e:
+            failed.append({"path": str(it.get("path")), "error": f"bad path: {e}"})
+            continue
 
-        dst.parent.mkdir(parents=True, exist_ok=True)
-        shutil.move(str(p), str(dst))
-        moved.append({"from": str(p), "to": str(dst)})
+        if not p.exists() or not p.is_file():
+            failed.append({"path": str(p), "error": "source does not exist"})
+            continue
 
-    return jsonify({"ok": True, "moved": moved})
+        artist = (it.get("artist") or "Unknown Artist").strip()
+        title  = (it.get("title")  or "Unknown Title").strip()
+        ext    = (it.get("ext")    or p.suffix).lower()
+
+        target_name = build_target(artist, title, ext)
+        dst = p.parent / target_name
+
+        # dacă numele e identic, nu are sens să mutăm
+        if p.name == dst.name:
+            skipped.append({"path": str(p), "reason": "same name"})
+            continue
+
+        # dacă ținta există, găsim un nume liber
+        dst_final = unique_target(dst)
+
+        try:
+            app.logger.info("Rename: %s  ->  %s", p, dst_final)
+            # în același folder: atomic replace/rename
+            os.replace(p, dst_final)
+            moved.append({"from": str(p), "to": str(dst_final)})
+        except Exception as e:
+            failed.append({"path": str(p), "error": str(e)})
+
+    return jsonify({"ok": True, "moved": moved, "skipped": skipped, "failed": failed})
 
 @app.post("/api/delete")
 def api_delete():
