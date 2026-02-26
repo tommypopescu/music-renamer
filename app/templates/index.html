@@ -2,11 +2,11 @@
 <html lang="en">
 <head>
     <meta charset="utf-8"/>
-    <title>Music Renamer (beets)</title>
+    <title>Music Renamer</title>
     <meta name="viewport" content="width=device-width, initial-scale=1"/>
     <style>
         body { font-family: system-ui, Arial, sans-serif; margin: 2rem; }
-        button { margin-right: 1rem; margin-bottom: 1rem; padding: .5rem 1rem; }
+        button { margin-right: 1rem; margin-bottom: 1rem; padding: .6rem 1rem; }
         input[type="text"] { width: 420px; padding: .4rem; }
         pre { background:#111; color:#0f0; padding:1rem; border-radius:8px; white-space:pre-wrap; }
         .danger { background:#8b0000; color:#fff; }
@@ -15,37 +15,36 @@
 </head>
 
 <body>
-    <h1>Music Renamer</h1>
-    <p>This LAN-only UI performs title cleanup and renaming using beets.</p>
 
-    <h2>Title Cleanup</h2>
-    <button onclick="call('/api/clean-titles', {})">
-        Clean Titles (remove leading numbers)
-    </button>
+<h1>Music Renamer</h1>
+<p>This LAN-only UI loads files, cleans titles and renames tracks using beets.</p>
 
-    <h2>Rename Files</h2>
-    <button onclick="call('/api/preview-rename', {})">Preview rename</button>
-    <button onclick="call('/api/apply-rename', {})">Apply rename</button>
+<h2>Load Files</h2>
+<button onclick="call('/api/load', {})">Load files from /inbox (no tagging)</button>
 
-    <h2>Delete from Library</h2>
-    <div class="row">
-        <label>Beets query:</label>
-        <input id="delq" type="text" placeholder="e.g. artist:Prodigy title:Firestarter"/>
-        <label><input id="delfiles" type="checkbox"/> Also delete files from disk</label>
-    </div>
-    <button class="danger" onclick="del()">Delete</button>
+<h2>Title Cleanup</h2>
+<button onclick="call('/api/clean-titles', {})">Clean Titles (remove leading numbers)</button>
 
-    <h2>Metadata (optional)</h2>
-    <button onclick="call('/api/update', {})">Update metadata (mbsync)</button>
+<h2>Rename Files</h2>
+<button onclick="call('/api/preview-rename', {})">Preview rename</button>
+<button onclick="call('/api/apply-rename', {})">Apply rename</button>
 
-    <h2>Output</h2>
-    <pre id="out"></pre>
+<h2>Delete from Library</h2>
+<div class="row">
+    <label>Beets query:</label>
+    <input id="delq" type="text" placeholder="e.g. artist:Prodigy title:Firestarter"/>
+    <label><input id="delfiles" type="checkbox"/> Also delete files from disk</label>
+</div>
+<button class="danger" onclick="del()">Delete</button>
+
+<h2>Output</h2>
+<pre id="out"></pre>
 
 <script>
 async function call(url, body) {
     const res = await fetch(url, {
-        method: 'POST',
-        headers: {'Content-Type':'application/json'},
+        method:'POST',
+        headers:{'Content-Type':'application/json'},
         body: JSON.stringify(body || {})
     });
     const j = await res.json();
@@ -59,11 +58,8 @@ async function del() {
     const q = document.getElementById('delq').value.trim();
     const df = document.getElementById('delfiles').checked;
 
-    if (!q) {
-        alert("Please enter a query.");
-        return;
-    }
-    if (!confirm("Are you sure? This action cannot be undone.")) return;
+    if (!q) { alert("Please enter a query."); return; }
+    if (!confirm("Are you sure? This cannot be undone.")) return;
 
     await call('/api/delete', {query: q, delete_files: df});
 }
