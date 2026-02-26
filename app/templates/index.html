@@ -112,7 +112,7 @@ function sanitizeFileName(name){
   // replică simplă a sanitizării din backend: înlocuiește caracterele interzise cu underscore
   name = name.trim().replace(/[\\/:*?"<>|]+/g, "_").trim();
   // curăță ghilimele/brackets la margine
-  return name.replace(/^[ '"–—_\[\]\(\)]+|[ '"–—_\[\]\(\)]+$/g, "");
+return (name || "").trim().replace(/[\\/:*?"<>|]+/g, "_");
 }
 
 function buildPreviewName(artist, title, ext){

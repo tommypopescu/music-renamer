@@ -134,14 +134,22 @@ def parse_tags(path: Path) -> tuple[str, str]:
     return artist, title
 
 def build_target(artist: str, title: str, ext: str) -> str:
-    """Return final file name according to template and sanitize it."""
-    safe_artist = artist.strip()
-    safe_title  = title.strip()
+    """Return final file name according to template and sanitize only forbidden characters."""
+    safe_artist = (artist or "").strip()
+    safe_title  = (title  or "").strip()
+
+    # păstrăm exact ce editezi în UI (paranteze/ghilimele incluse)
     name = TEMPLATE.format(artist=safe_artist, title=safe_title).strip()
-    name = name.strip(" '\"-–—_")
-    # sanitize filename
+
+    # înlocuim DOAR caracterele interzise de sistemul de fișiere (Windows rules)
     name = re.sub(r'[\\/:*?"<>|]+', "_", name)
-    return f"{name}{ext.lower()}"
+
+    # asigură extensia cu punct
+    ext = (ext or "").lower()
+    if ext and not ext.startswith("."):
+        ext = "." + ext
+
+    return f"{name}{ext}"
 
 # -----------------------------------------------------------------------------
 # Routes
