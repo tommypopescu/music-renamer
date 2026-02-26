@@ -159,37 +159,54 @@ def api_scan():
 
 @app.post("/api/preview")
 def api_preview():
-    """Compute rename plan (src → dst) based on current template."""
-    dest_base = Path(OUTDIR)
+    """
+    Use manual edits if provided.
+    Body: { items: [ {path, artist, title, ext}, ... ] }
+    """
+    payload = request.get_json(force=True) or {}
+    items = payload.get("items") or []
+
     preview = []
-    for p in list_audio_files(INBOX):
-        artist, title = parse_tags(p)
-        target_name = build_target(artist, title, p.suffix)
-        target_path = dest_base / target_name
-        preview.append({"src": str(p), "dst": str(target_path)})
+    for it in items:
+        p = Path(it["path"])
+        artist = it.get("artist") or "Unknown Artist"
+        title  = it.get("title")  or "Unknown Title"
+        ext    = it.get("ext")    or p.suffix.lower()
+
+        target_name = build_target(artist, title, ext)
+        target_path = Path(OUTDIR) / target_name
+
+        preview.append({ "src": str(p), "dst": str(target_path) })
+
     return jsonify({"ok": True, "preview": preview})
 
 @app.post("/api/apply")
 def api_apply():
-    """Apply rename/move on disk."""
-    dest_base = Path(OUTDIR)
-    dest_base.mkdir(parents=True, exist_ok=True)
-    ops = []
-    for p in list_audio_files(INBOX):
-        artist, title = parse_tags(p)
-        target_name = build_target(artist, title, p.suffix)
-        dst = dest_base / target_name
-        # skip if same location & same name
-        try:
-            if p.resolve() == dst.resolve():
-                continue
-        except Exception:
-            # resolve can fail across mounts; not critical
-            pass
+    payload = request.get_json(force=True) or {}
+    items = payload.get("items") or []
+
+    dest = Path(OUTDIR)
+    dest.mkdir(parents=True, exist_ok=True)
+
+    moved = []
+
+    for it in items:
+        p = Path(it["path"])
+        if not p.exists():
+            continue
+
+        artist = it.get("artist") or "Unknown Artist"
+        title  = it.get("title")  or "Unknown Title"
+        ext    = it.get("ext")    or p.suffix.lower()
+
+        target_name = build_target(artist, title, ext)
+        dst = dest / target_name
+
         dst.parent.mkdir(parents=True, exist_ok=True)
         shutil.move(str(p), str(dst))
-        ops.append({"from": str(p), "to": str(dst)})
-    return jsonify({"ok": True, "moved": ops})
+        moved.append({"from": str(p), "to": str(dst)})
+
+    return jsonify({"ok": True, "moved": moved})
 
 @app.post("/api/delete")
 def api_delete():

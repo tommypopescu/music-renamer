@@ -2,136 +2,95 @@
 <html lang="en">
 <head>
   <meta charset="utf-8"/>
-  <title>Music Renamer (no DB)</title>
+  <title>Music Renamer (Editable)</title>
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
   <style>
-    :root {
-      color-scheme: light dark;
-      --bg: #fff;
-      --fg: #111;
-      --muted: #444;
-      --accent: #0b5fff;
-      --danger: #8b0000;
-      --panel: #f6f6f7;
-      --border: #e6e6e8;
-      --mono-bg: #111;
-      --mono-fg: #0f0;
-    }
-    @media (prefers-color-scheme: dark) {
-      :root {
-        --bg: #0b0c10;
-        --fg: #e9e9ee;
-        --muted: #a7a7b2;
-        --panel: #14151b;
-        --border: #23242c;
-        --mono-bg: #0a0a0a;
-        --mono-fg: #72ff72;
-      }
-    }
-    html, body { margin:0; padding:0; background:var(--bg); color:var(--fg); }
-    body { font: 15px/1.55 system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; padding: 2rem; }
-    h1 { margin-top: 0; }
-    .row { margin: 1rem 0; }
-    .btn { display:inline-block; padding:.6rem 1rem; border:1px solid var(--border); background:var(--panel); color:var(--fg); border-radius:6px; cursor:pointer; }
-    .btn:hover { filter: brightness(0.97); }
-    .btn.primary { background: var(--accent); color: #fff; border-color: var(--accent); }
-    .btn.danger  { background: var(--danger); color:#fff; border-color: var(--danger); }
-    .btn.small   { padding:.45rem .8rem; font-size:.92rem; }
-    textarea, input[type="text"] { width:100%; border:1px solid var(--border); background:var(--panel); color:var(--fg); border-radius:6px; padding:.6rem .7rem; }
-    .hint { color:var(--muted); font-size:.92rem; }
-    .grid { display:grid; grid-template-columns: 1fr auto auto auto; gap:.25rem .75rem; align-items:center; }
-    table { width:100%; border-collapse: collapse; margin-top:.5rem; }
-    th, td { text-align:left; padding:8px 10px; border-bottom:1px solid var(--border); vertical-align: top; }
-    th { font-weight:600; }
-    code, pre { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace; }
-    pre { background:var(--mono-bg); color:var(--mono-fg); padding:1rem; border-radius:8px; white-space:pre-wrap; }
-    .pill { display:inline-block; padding:.15rem .45rem; border:1px solid var(--border); border-radius:999px; font-size:.82rem; color:var(--muted);}
-    .toolbar { display:flex; flex-wrap:wrap; gap:.5rem; }
-    .section { margin:1.5rem 0; }
+    body { font-family: system-ui, Arial, sans-serif; margin: 2rem; }
+    button { margin-right: 1rem; margin-bottom: 1rem; padding:.5rem 1rem; }
+    input[type="text"] { width: 98%; padding:.3rem .4rem; }
+    table { width:100%; border-collapse:collapse; margin-top:1rem; }
+    th, td { padding:8px; border-bottom:1px solid #ccc; }
+    th { background:#eee; text-align:left; }
+    pre { background:#111; color:#0f0; padding:1rem; border-radius:6px; }
+    .danger { background:#8b0000; color:#fff; }
+    .small { font-size:.8rem; color:#666; }
   </style>
 </head>
-
 <body>
 
-  <h1>Music Renamer</h1>
-  <p class="hint">
-    LAN‑only tool. It scans <code>/inbox</code>, extracts <b>Artist</b> &amp; <b>Title</b> from file names (and clean tags if they look OK),
-    shows a rename plan, and applies it to <code>/library</code> (or in‑place if configured).
-  </p>
+<h1>Music Renamer</h1>
 
-  <div class="section">
-    <div class="toolbar">
-      <button class="btn primary" onclick="scan()">Scan</button>
-      <button class="btn" onclick="preview()">Preview rename</button>
-      <button class="btn" onclick="applyRename()">Apply rename</button>
-    </div>
-  </div>
+<div class="row">
+  <button onclick="scan()">Scan</button>
+  <button onclick="preview()">Preview rename</button>
+  <button onclick="applyRename()">Apply rename</button>
+</div>
 
-  <div class="section">
-    <h3>Delete files</h3>
-    <p class="hint">Paste absolute paths (one per line) you want to delete:</p>
-    <textarea id="delpaths" rows="4" placeholder="/inbox/example1.mp3&#10;/inbox/example2.flac"></textarea>
-    <div class="row">
-      <button class="btn danger" onclick="doDelete()">Delete</button>
-      <span class="hint">This is irreversible. Use with care.</span>
-    </div>
-  </div>
+<h3>Delete files</h3>
+<textarea id="delpaths" rows="3" style="width:100%;"></textarea><br/>
+<button class="danger" onclick="doDelete()">Delete</button>
 
-  <div class="section">
-    <h3>Items</h3>
-    <div class="hint">Detected audio files from <code>/inbox</code>.</div>
-    <table id="tbl">
-      <thead>
-        <tr>
-          <th>File</th>
-          <th>Artist</th>
-          <th>Title</th>
-          <th>Ext</th>
-        </tr>
-      </thead>
-      <tbody></tbody>
-    </table>
-  </div>
+<h3>Items</h3>
+<table id="tbl">
+  <thead>
+    <tr>
+      <th>File</th>
+      <th>Artist (editable)</th>
+      <th>Title (editable)</th>
+      <th>Ext</th>
+    </tr>
+  </thead>
+  <tbody></tbody>
+</table>
 
-  <div class="section">
-    <h3>Output</h3>
-    <pre id="out">Ready.</pre>
-  </div>
+<h3>Output</h3>
+<pre id="out"></pre>
 
 <script>
+
+let CURRENT_ITEMS = [];
+
 async function call(url, body) {
   const res = await fetch(url, {
     method:'POST',
     headers:{'Content-Type':'application/json'},
     body: JSON.stringify(body || {})
   });
-  let data = {};
-  try { data = await res.json(); }
-  catch { data = { ok:false, error:'Invalid JSON response' }; }
-  return data;
+  return await res.json();
 }
 
 function setOut(obj) {
-  const el = document.getElementById('out');
-  el.textContent = (obj.ok ? 'OK\n\n' : 'ERROR\n\n') + JSON.stringify(obj, null, 2);
+  document.getElementById('out').textContent =
+    (obj.ok ? "OK\n\n" : "ERROR\n\n") +
+    JSON.stringify(obj, null, 2);
 }
 
 function renderItems(items) {
+  CURRENT_ITEMS = items;
   const tb = document.querySelector('#tbl tbody');
-  tb.innerHTML = '';
-  for (const it of (items || [])) {
+  tb.innerHTML = "";
+
+  for (let i=0; i<items.length; i++) {
+    const it = items[i];
     const tr = document.createElement('tr');
-    const file = document.createElement('td');
-    const art  = document.createElement('td');
-    const tit  = document.createElement('td');
-    const ext  = document.createElement('td');
-    file.textContent = it.rel || it.path;
-    art.textContent  = it.artist || '';
-    tit.textContent  = it.title  || '';
-    ext.textContent  = it.ext    || '';
-    tr.append(file, art, tit, ext);
+
+    tr.innerHTML = `
+      <td>${it.rel || it.path}</td>
+      <td><input type="text" value="${it.artist || ""}" data-idx="${i}" data-field="artist"/></td>
+      <td><input type="text" value="${it.title || ""}"  data-idx="${i}" data-field="title"/></td>
+      <td>${it.ext}</td>
+    `;
     tb.appendChild(tr);
   }
+
+  // listen to edits
+  document.querySelectorAll("input[data-idx]").forEach(inp=>{
+    inp.addEventListener("input", e=>{
+      const idx = e.target.getAttribute("data-idx");
+      const fld = e.target.getAttribute("data-field");
+      CURRENT_ITEMS[idx][fld] = e.target.value;
+    });
+  });
 }
 
 async function scan() {
@@ -141,30 +100,26 @@ async function scan() {
 }
 
 async function preview() {
-  const j = await call('/api/preview', {});
+  const j = await call('/api/preview', { items: CURRENT_ITEMS });
   setOut(j);
 }
 
 async function applyRename() {
-  const j = await call('/api/apply', {});
+  const j = await call('/api/apply', { items: CURRENT_ITEMS });
   setOut(j);
-  // refresh list after operations
   await scan();
 }
 
 async function doDelete() {
   const raw = document.getElementById('delpaths').value.trim();
-  const paths = raw ? raw.split(/\r?\n/).map(s => s.trim()).filter(Boolean) : [];
-  if (!paths.length) { alert('Please paste one or more absolute paths.'); return; }
-  if (!confirm('Are you sure? This cannot be undone.')) return;
-  const j = await call('/api/delete', {paths});
+  const paths = raw ? raw.split(/\r?\n/) : [];
+  const j = await call('/api/delete', { paths });
   setOut(j);
   await scan();
 }
 
-// Auto-scan on load to show current items
 scan();
-</script>
 
+</script>
 </body>
 </html>
