@@ -178,7 +178,7 @@ def api_scan():
             "artist": artist,
             "title": title,
             "ext": p.suffix.lower(),
-            "selected": True,           # implicit selectat pentru rename
+            "selected": False,           # implicit selectat pentru rename True. Fales nu mai selecteaza tot
             "mtime": ts,                # epoch seconds (util pt sort)
             "mtime_str": dt_str         # afișare
         })
