@@ -53,6 +53,15 @@
     <button class="btn" onclick="toggleSelect(false)">Select none</button>
   </div>
 
+  <div style="margin-bottom: 1rem;">
+    <div style="display: flex; gap: 0.5rem; align-items: center; margin-bottom: 0.5rem;">
+      <input type="text" id="searchInput" placeholder="🔍 Search by filename, artist, or title..."
+             style="flex: 1; max-width: 500px;" oninput="onSearchInput()"/>
+      <button class="btn" onclick="clearFilter()">Clear</button>
+    </div>
+    <div class="hint" id="filterStats" style="margin: 0;">Showing all items</div>
+  </div>
+
   <div>
     <h3>Delete files</h3>
     <div class="hint">Lipește căi absolute (una pe linie) pentru ștergere:</div>
@@ -85,6 +94,8 @@
 
 <script>
 let CURRENT_ITEMS = [];
+let FILTERED_ITEMS = [];           // items after applying search filter
+let SEARCH_TERM = '';              // current search term
 let SORT_DESC = true;              // sort by newest first
 let RENAME_TEMPLATE = "{artist} - {title}"; // default; read from server at load
 
@@ -127,14 +138,52 @@ function sortItems(){
   CURRENT_ITEMS.sort((a,b)=> SORT_DESC ? (b.mtime - a.mtime) : (a.mtime - b.mtime));
 }
 
+function filterItems() {
+  if (!SEARCH_TERM) {
+    FILTERED_ITEMS = CURRENT_ITEMS;
+  } else {
+    const term = SEARCH_TERM.toLowerCase();
+    FILTERED_ITEMS = CURRENT_ITEMS.filter(item => {
+      const filename = (item.rel || item.path || '').toLowerCase();
+      const artist = (item.artist || '').toLowerCase();
+      const title = (item.title || '').toLowerCase();
+      return filename.includes(term) || artist.includes(term) || title.includes(term);
+    });
+  }
+  updateFilterStats();
+}
+
+function updateFilterStats() {
+  const stats = $('#filterStats');
+  if (!SEARCH_TERM) {
+    stats.textContent = `Showing all ${CURRENT_ITEMS.length} items`;
+  } else {
+    stats.textContent = `Showing ${FILTERED_ITEMS.length} of ${CURRENT_ITEMS.length} items`;
+  }
+}
+
+function onSearchInput() {
+  SEARCH_TERM = $('#searchInput').value.trim();
+  filterItems();
+  renderItems(FILTERED_ITEMS);
+}
+
+function clearFilter() {
+  SEARCH_TERM = '';
+  $('#searchInput').value = '';
+  filterItems();
+  renderItems(FILTERED_ITEMS);
+}
+
 function syncHeaderChk(){
-  const all = CURRENT_ITEMS.length > 0 && CURRENT_ITEMS.every(x => !!x.selected);
+  const all = FILTERED_ITEMS.length > 0 && FILTERED_ITEMS.every(x => !!x.selected);
   $('#chkAll').checked = all;
 }
 
 function onChkAll(){
   const val = $('#chkAll').checked;
-  CURRENT_ITEMS.forEach(x => x.selected = val);
+  // Only update visible (filtered) items
+  FILTERED_ITEMS.forEach(x => x.selected = val);
   document.querySelectorAll('input[type="checkbox"][data-idx]').forEach(cb => cb.checked = val);
 }
 
@@ -146,27 +195,31 @@ function toggleSelect(val){
 function toggleSortByDate(){
   SORT_DESC = !SORT_DESC;
   $('#dateArrow').textContent = SORT_DESC ? '▼' : '▲';
-  renderItems(CURRENT_ITEMS, true); // re-render with sorting
+  sortItems();
+  filterItems();
+  renderItems(FILTERED_ITEMS);
 }
 
 function renderItems(items, forceSort=false) {
-  CURRENT_ITEMS = items || [];
-  if (forceSort) sortItems();
-
+  const itemsToRender = items || [];
+  
   const tb = document.querySelector('#tbl tbody');
   tb.innerHTML = '';
 
-  for (let i = 0; i < CURRENT_ITEMS.length; i++) {
-    const it = CURRENT_ITEMS[i];
+  for (let i = 0; i < itemsToRender.length; i++) {
+    const it = itemsToRender[i];
     const tr = document.createElement('tr');
 
     const previewName = buildPreviewName(it.artist, it.title, it.ext);
 
+    // Store reference to the actual item object for editing
+    tr.setAttribute('data-item-path', it.path);
+
     tr.innerHTML = `
-      <td class="w-checkbox"><input type="checkbox" data-idx="${i}" ${it.selected ? 'checked' : ''} /></td>
+      <td class="w-checkbox"><input type="checkbox" data-path="${escapeHtml(it.path)}" ${it.selected ? 'checked' : ''} /></td>
       <td class="w-path">${escapeHtml(it.rel || it.path)}</td>
-      <td class="w-artist"><input type="text" value="${escapeHtml(it.artist || '')}" data-idx="${i}" data-field="artist"/></td>
-      <td class="w-title"><input type="text" value="${escapeHtml(it.title || '')}"  data-idx="${i}" data-field="title"/></td>
+      <td class="w-artist"><input type="text" value="${escapeHtml(it.artist || '')}" data-path="${escapeHtml(it.path)}" data-field="artist"/></td>
+      <td class="w-title"><input type="text" value="${escapeHtml(it.title || '')}"  data-path="${escapeHtml(it.path)}" data-field="title"/></td>
       <td>${escapeHtml(it.ext || '')}</td>
       <td class="w-date">${escapeHtml(it.mtime_str || '')}</td>
       <td class="w-prev">${escapeHtml(previewName)}</td>
@@ -175,24 +228,29 @@ function renderItems(items, forceSort=false) {
   }
 
   // listeners
-  document.querySelectorAll('input[type="checkbox"][data-idx]').forEach(cb=>{
+  document.querySelectorAll('input[type="checkbox"][data-path]').forEach(cb=>{
     cb.addEventListener('change', (e)=>{
-      const idx = +e.target.getAttribute('data-idx');
-      CURRENT_ITEMS[idx].selected = e.target.checked;
+      const path = e.target.getAttribute('data-path');
+      const item = CURRENT_ITEMS.find(x => x.path === path);
+      if (item) item.selected = e.target.checked;
+      syncHeaderChk();
     });
   });
 
-  document.querySelectorAll('input[type="text"][data-idx]').forEach(inp=>{
+  document.querySelectorAll('input[type="text"][data-path]').forEach(inp=>{
     inp.addEventListener('input', (e)=>{
-      const idx = +e.target.getAttribute('data-idx');
+      const path = e.target.getAttribute('data-path');
       const fld = e.target.getAttribute('data-field');
-      CURRENT_ITEMS[idx][fld] = e.target.value;
-
-      // update live preview cell
-      const row = e.target.closest('tr');
-      const ext = CURRENT_ITEMS[idx].ext || '';
-      const pn = buildPreviewName(CURRENT_ITEMS[idx].artist, CURRENT_ITEMS[idx].title, ext);
-      row.querySelector('.w-prev').textContent = pn;
+      const item = CURRENT_ITEMS.find(x => x.path === path);
+      if (item) {
+        item[fld] = e.target.value;
+        
+        // update live preview cell
+        const row = e.target.closest('tr');
+        const ext = item.ext || '';
+        const pn = buildPreviewName(item.artist, item.title, ext);
+        row.querySelector('.w-prev').textContent = pn;
+      }
     });
   });
 
@@ -205,7 +263,11 @@ async function scan() {
     // by default, newest first
     CURRENT_ITEMS = j.items || [];
     sortItems();
-    renderItems(CURRENT_ITEMS);
+    // Clear filter on new scan
+    SEARCH_TERM = '';
+    $('#searchInput').value = '';
+    filterItems();
+    renderItems(FILTERED_ITEMS);
   }
   setOut(j);
 }
@@ -245,6 +307,8 @@ async function loadSettings(){
 (async function(){
   await loadSettings();
   await scan();
+  // Initialize filter stats
+  updateFilterStats();
 })();
 </script>
 </body>
