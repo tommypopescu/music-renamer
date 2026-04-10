@@ -51,6 +51,7 @@
     <button class="btn" onclick="applyRename()">Apply rename (selected)</button>
     <button class="btn" onclick="toggleSelect(true)">Select all</button>
     <button class="btn" onclick="toggleSelect(false)">Select none</button>
+    <button class="btn danger" onclick="deleteSelected()">Delete selected</button>
     <input type="text" id="searchInput" placeholder="🔍 Search by filename, artist, or title..."
            style="flex: 1; max-width: 500px;" oninput="onSearchInput()"/>
     <button class="btn" onclick="clearFilter()">Clear</button>
@@ -275,6 +276,33 @@ async function preview() {
 
 async function applyRename() {
   const j = await call('/api/apply', { items: CURRENT_ITEMS });
+  setOut(j);
+  await scan();
+}
+
+async function deleteSelected() {
+  const selected = CURRENT_ITEMS.filter(x => x.selected);
+  if (!selected.length) {
+    alert('No files selected. Please select files to delete.');
+    return;
+  }
+  
+  const pathsToDelete = [];
+  
+  // Ask confirmation for each file
+  for (const item of selected) {
+    const filename = item.rel || item.path;
+    if (confirm(`Delete this file?\n\n${filename}\n\nThis cannot be undone.`)) {
+      pathsToDelete.push(item.path);
+    }
+  }
+  
+  if (!pathsToDelete.length) {
+    setOut({ ok: true, message: 'No files were deleted (user cancelled).' });
+    return;
+  }
+  
+  const j = await call('/api/delete', { paths: pathsToDelete });
   setOut(j);
   await scan();
 }
