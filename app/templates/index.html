@@ -51,16 +51,12 @@
     <button class="btn" onclick="applyRename()">Apply rename (selected)</button>
     <button class="btn" onclick="toggleSelect(true)">Select all</button>
     <button class="btn" onclick="toggleSelect(false)">Select none</button>
+    <input type="text" id="searchInput" placeholder="🔍 Search by filename, artist, or title..."
+           style="flex: 1; max-width: 500px;" oninput="onSearchInput()"/>
+    <button class="btn" onclick="clearFilter()">Clear</button>
   </div>
 
-  <div style="margin-bottom: 1rem;">
-    <div style="display: flex; gap: 0.5rem; align-items: center; margin-bottom: 0.5rem;">
-      <input type="text" id="searchInput" placeholder="🔍 Search by filename, artist, or title..."
-             style="flex: 1; max-width: 500px;" oninput="onSearchInput()"/>
-      <button class="btn" onclick="clearFilter()">Clear</button>
-    </div>
-    <div class="hint" id="filterStats" style="margin: 0;">Showing all items</div>
-  </div>
+  <div class="hint" id="filterStats" style="margin-bottom: 1rem;">Showing all items</div>
 
   <div>
     <h3>Delete files</h3>
