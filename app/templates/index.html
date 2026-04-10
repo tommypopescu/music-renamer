@@ -59,13 +59,6 @@
 
   <div class="hint" id="filterStats" style="margin-bottom: 1rem;">Showing all items</div>
 
-  <div>
-    <h3>Delete files</h3>
-    <div class="hint">Lipește căi absolute (una pe linie) pentru ștergere:</div>
-    <textarea id="delpaths" rows="3" placeholder="/inbox/ex1.mp3&#10;/inbox/sub/ex2.flac"></textarea><br/>
-    <button class="btn danger" onclick="doDelete()">Delete</button>
-  </div>
-
   <h3>Items</h3>
   <table id="tbl">
     <thead>
@@ -303,16 +296,6 @@ async function deleteSelected() {
   }
   
   const j = await call('/api/delete', { paths: pathsToDelete });
-  setOut(j);
-  await scan();
-}
-
-async function doDelete() {
-  const raw = $('#delpaths').value.trim();
-  const paths = raw ? raw.split(/\r?\n/).map(s => s.trim()).filter(Boolean) : [];
-  if (!paths.length) { alert('Please paste one or more absolute paths.'); return; }
-  if (!confirm('Are you sure? This cannot be undone.')) return;
-  const j = await call('/api/delete', { paths });
   setOut(j);
   await scan();
 }
