@@ -1,6 +1,5 @@
 import os
 import re
-import shutil
 import logging
 from pathlib import Path
 from datetime import datetime
@@ -40,6 +39,28 @@ SITE_TAIL_RE = re.compile(
 )
 
 BAD_TAG_RE = re.compile(r"(?:www\.|https?://|\.com\b|\.net\b|\.org\b)", re.IGNORECASE)
+
+# -----------------------------------------------------------------------------
+# Security helper — path traversal prevention
+# -----------------------------------------------------------------------------
+def _safe_path(raw: str) -> Path | None:
+    """
+    Resolve raw path and verify it is inside one of the known INBOXES.
+    Returns the resolved Path or None if the path is outside all inboxes.
+    This prevents path traversal attacks (e.g. ../../etc/passwd) from
+    user-controlled JSON input reaching filesystem operations.
+    """
+    try:
+        p = Path(raw).resolve()
+    except Exception:
+        return None
+    for inbox in INBOXES:
+        try:
+            p.relative_to(Path(inbox).resolve())
+            return p
+        except ValueError:
+            continue
+    return None  # outside all inboxes — reject
 
 # -----------------------------------------------------------------------------
 # Helpers
@@ -126,12 +147,15 @@ def parse_tags(path: Path) -> tuple[str, str]:
         except Exception:
             pass
 
+        # Acceptam tag-uri doar ca fallback, si doar daca nu sunt "site-ish"
         if not artist and tag_artist and not BAD_TAG_RE.search(tag_artist):
             artist = tag_artist
         if not title and tag_title and not BAD_TAG_RE.search(tag_title):
+            # curatam orice site tail eventual ramas
             title = SITE_TAIL_RE.sub("", tag_title).strip()
 
-    # 3) Taie sufixe numerice tip BPM din titlu
+    # 3) (Optional) Taie sufixe numerice tip BPM din titlu: ex. "... (Clean) 121" -> "... (Clean)"
+    #    Comenteaza cele doua linii daca NU vrei regula asta.
     title = re.sub(r"\s+\(?\b\d{2,3}\b\)?$", "", title).strip()
 
     # 4) Normalizare finala
@@ -143,11 +167,18 @@ def build_target(artist: str, title: str, ext: str) -> str:
     """Return final file name according to template and sanitize only forbidden characters."""
     safe_artist = (artist or "").strip()
     safe_title  = (title  or "").strip()
+
+    # pastram exact ce editezi in UI (paranteze/ghilimele incluse)
     name = TEMPLATE.format(artist=safe_artist, title=safe_title).strip()
+
+    # inlocuim DOAR caracterele interzise de sistemul de fisiere (Windows rules)
     name = re.sub(r'[\\/:*?"<>|]+', "_", name)
+
+    # asigura extensia cu punct
     ext = (ext or "").lower()
     if ext and not ext.startswith("."):
         ext = "." + ext
+
     return f"{name}{ext}"
 
 # -----------------------------------------------------------------------------
@@ -174,54 +205,80 @@ def api_scan():
         items.append({
             "path": str(p),
             "rel": str(p.relative_to(inbox_root)),
-            "inbox": inbox_root,
+            "inbox": inbox_root,            # which source folder this file came from
             "artist": artist,
             "title": title,
             "ext": p.suffix.lower(),
-            "selected": False,
-            "mtime": ts,
-            "mtime_str": dt_str
+            "selected": False,           # implicit selectat pentru rename True. Fales nu mai selecteaza tot
+            "mtime": ts,                # epoch seconds (util pt sort)
+            "mtime_str": dt_str         # afisare
         })
     return jsonify({"ok": True, "items": items})
 
 @app.post("/api/preview")
 def api_preview():
+    """
+    Primeste { items: [...] }, afiseaza planul in-place si marcheaza coliziunile.
+    """
     try:
         payload = request.get_json(force=True) or {}
         items = payload.get("items") or []
+
         preview = []
         for it in items:
             if not it.get("selected", False):
                 continue
-            p = Path(it["path"])
-            if not p.exists():
-                preview.append({"src": str(it.get("path")), "dst": None, "collision": False, "missing": True})
+
+            # --- path traversal fix: validate path is inside a known inbox ---
+            p = _safe_path(it.get("path", ""))
+            if p is None:
+                preview.append({"src": it.get("path"), "dst": None,
+                                 "collision": False, "missing": True})
                 continue
+
+            if not p.exists():
+                preview.append({"src": str(p), "dst": None,
+                                 "collision": False, "missing": True})
+                continue
+
             artist = it.get("artist") or "Unknown Artist"
             title  = it.get("title")  or "Unknown Title"
             ext    = it.get("ext")    or p.suffix.lower()
+
             target_name = build_target(artist, title, ext)
             target_path = p.parent / target_name
-            collision = target_path.exists() and (p.resolve() != target_path.resolve())
+
+            # coliziune = exista alt fisier cu numele propus, diferit de src
+            collision = target_path.exists() and (p != target_path)
+
             preview.append({
                 "src": str(p),
                 "dst": str(target_path),
                 "collision": bool(collision),
                 "missing": False
             })
+
         return jsonify({"ok": True, "preview": preview})
-    except Exception as e:
+
+    except Exception:
+        # --- exception exposure fix: log internally, return generic message ---
         app.logger.exception("Fatal error in /api/preview")
-        return jsonify({"ok": False, "error": f"/api/preview failed: {e}"}), 500
+        return jsonify({"ok": False, "error": "Preview failed. Check server logs."}), 500
 
 @app.post("/api/apply")
 def api_apply():
+    """
+    Apply rename in-place pentru elementele SELECTATE.
+    Returneaza moved/skipped/failed cu motivul (mereu JSON).
+    """
     try:
         payload = request.get_json(force=True) or {}
         items = payload.get("items") or []
+
         moved, skipped, failed = [], [], []
 
         def unique_target(dst: Path) -> Path:
+            """Daca 'dst' exista, gaseste 'name (1).ext', 'name (2).ext', ..."""
             if not dst.exists():
                 return dst
             stem, suf, i = dst.stem, dst.suffix, 1
@@ -232,47 +289,66 @@ def api_apply():
                 i += 1
 
         for it in items:
+            # trebuie bifat in UI
             if not it.get("selected", False):
                 skipped.append({"path": it.get("path"), "reason": "not selected"})
                 continue
-            try:
-                p = Path(it["path"])
-            except Exception as e:
-                failed.append({"path": str(it.get("path")), "error": f"bad path: {e}"})
+
+            # --- path traversal fix: validate path is inside a known inbox ---
+            p = _safe_path(it.get("path", ""))
+            if p is None:
+                app.logger.warning("Rejected path outside inbox: %s", it.get("path"))
+                failed.append({"path": it.get("path"), "error": "path not allowed"})
                 continue
+
             if not p.exists() or not p.is_file():
                 failed.append({"path": str(p), "error": "source does not exist"})
                 continue
+
             artist = (it.get("artist") or "Unknown Artist").strip()
             title  = (it.get("title")  or "Unknown Title").strip()
             ext    = (it.get("ext")    or p.suffix).lower()
+
+            # numele tinta propus
             target_name = build_target(artist, title, ext)
             dst = p.parent / target_name
+
+            # daca ar ramane acelasi nume, nu are sens
             if p.name == dst.name:
                 skipped.append({"path": str(p), "reason": "same name"})
                 continue
+
+            # daca exista alt fisier cu acelasi nume, cauta nume liber
             dst_final = unique_target(dst)
+
             try:
                 app.logger.info("Rename: %s -> %s", p, dst_final)
-                os.replace(str(p), str(dst_final))
+                os.replace(str(p), str(dst_final))  # atomic in-place
                 moved.append({"from": str(p), "to": str(dst_final)})
-            except Exception as e:
+            except Exception:
+                # --- exception exposure fix: log internally, return generic message ---
                 app.logger.exception("Rename failed: %s -> %s", p, dst_final)
-                failed.append({"path": str(p), "error": str(e)})
+                failed.append({"path": str(p), "error": "rename failed"})
 
         return jsonify({"ok": True, "moved": moved, "skipped": skipped, "failed": failed})
-    except Exception as e:
+
+    except Exception:
+        # catch-all: niciodata HTML; intoarcem JSON diagnostic
         app.logger.exception("Fatal error in /api/apply")
-        return jsonify({"ok": False, "error": f"/api/apply failed: {e}"}), 500
+        return jsonify({"ok": False, "error": "Apply failed. Check server logs."}), 500
 
 @app.post("/api/delete")
 def api_delete():
-    """Delete selected absolute file paths."""
+    """Delete selected absolute file paths (one per line from UI)."""
     payload = request.get_json(force=True) or {}
     paths = payload.get("paths") or []
     removed = []
     for s in paths:
-        p = Path(s)
+        # --- path traversal fix: validate path is inside a known inbox ---
+        p = _safe_path(s)
+        if p is None:
+            app.logger.warning("Rejected delete path outside inbox: %s", s)
+            continue
         if p.exists() and p.is_file():
             p.unlink()
             removed.append(s)
