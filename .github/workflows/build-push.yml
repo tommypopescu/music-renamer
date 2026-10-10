@@ -40,16 +40,32 @@ jobs:
       # -----------------------------------------------------------------------
       # Trivy — scan imaginea dupa push
       # Blocheaza la CRITICAL sau HIGH cu fix disponibil
-      # CVE-uri OS fara patch in Debian 13 sunt in .trivyignore (re-evaluate periodic)
+      # CVE-uri OS fara patch in Debian 13 sunt in .trivyignore
+      # format: table ca sa vedem intotdeauna ce blocheaza in log
       # -----------------------------------------------------------------------
       - name: Trivy scan (CRITICAL+HIGH blocks)
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          image-ref: ghcr.io/${{ github.repository_owner }}/muserrenamer:${{ github.sha }}
+          format: table
+          severity: CRITICAL,HIGH
+          exit-code: '1'
+          ignore-unfixed: false
+          trivyignores: .trivyignore
+          vuln-type: os,library
+
+      # -----------------------------------------------------------------------
+      # Trivy — SARIF separat pentru Security tab (nu blocheaza)
+      # -----------------------------------------------------------------------
+      - name: Trivy scan (SARIF for Security tab)
+        if: always()
         uses: aquasecurity/trivy-action@v0.36.0
         with:
           image-ref: ghcr.io/${{ github.repository_owner }}/muserrenamer:${{ github.sha }}
           format: sarif
           output: trivy-results.sarif
           severity: CRITICAL,HIGH
-          exit-code: '1'
+          exit-code: '0'
           ignore-unfixed: false
           trivyignores: .trivyignore
           vuln-type: os,library
