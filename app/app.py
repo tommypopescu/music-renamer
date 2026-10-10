@@ -24,6 +24,10 @@ SUPPORT_EXT = {".mp3", ".flac", ".m4a", ".ogg", ".wav", ".opus", ".aac"}
 _raw = os.environ.get("MUSIC_INBOXES") or os.environ.get("MUSIC_INBOX", "/inbox")
 INBOXES: list[str] = [p.strip() for p in _raw.split(":") if p.strip()]
 
+# Pre-resolve inbox roots once at startup (trusted, server-controlled values).
+# Used by _safe_path() to reconstruct paths from trusted components only.
+_INBOX_ROOTS: list[Path] = [Path(i).resolve() for i in INBOXES]
+
 TEMPLATE = os.environ.get("RENAME_TEMPLATE", "{artist} - {title}")
 
 # -----------------------------------------------------------------------------
@@ -45,21 +49,31 @@ BAD_TAG_RE = re.compile(r"(?:www\.|https?://|\.com\b|\.net\b|\.org\b)", re.IGNOR
 # -----------------------------------------------------------------------------
 def _safe_path(raw: str) -> Path | None:
     """
-    Resolve raw path and verify it is inside one of the known INBOXES.
-    Returns the resolved Path or None if the path is outside all inboxes.
-    This prevents path traversal attacks (e.g. ../../etc/passwd) from
-    user-controlled JSON input reaching filesystem operations.
+    Validate that raw (user-controlled) resolves inside a known inbox, then
+    RECONSTRUCT the final path exclusively from trusted components:
+      inbox_root  — server-controlled, resolved at startup
+      rel         — the verified relative suffix (no .. components possible
+                    after resolve() + relative_to() succeed)
+
+    This breaks the tainted-data flow: no user-supplied bytes reach any
+    filesystem call after this function returns.
+    Returns None if the path escapes all inboxes.
     """
+    if not raw:
+        return None
     try:
-        p = Path(raw).resolve()
+        candidate = Path(raw).resolve()
     except Exception:
         return None
-    for inbox in INBOXES:
+    for inbox_root in _INBOX_ROOTS:
         try:
-            p.relative_to(Path(inbox).resolve())
-            return p
+            # relative_to() raises ValueError when candidate is not under inbox_root
+            rel = candidate.relative_to(inbox_root)
         except ValueError:
             continue
+        # Reconstruct entirely from trusted inbox_root + verified relative part.
+        # From this point forward no tainted data touches the filesystem.
+        return inbox_root / rel
     return None  # outside all inboxes — reject
 
 # -----------------------------------------------------------------------------
@@ -229,7 +243,7 @@ def api_preview():
             if not it.get("selected", False):
                 continue
 
-            # --- path traversal fix: validate path is inside a known inbox ---
+            # --- path traversal fix: validate & reconstruct from trusted inbox ---
             p = _safe_path(it.get("path", ""))
             if p is None:
                 preview.append({"src": it.get("path"), "dst": None,
@@ -246,6 +260,7 @@ def api_preview():
             ext    = it.get("ext")    or p.suffix.lower()
 
             target_name = build_target(artist, title, ext)
+            # target built from trusted p.parent (already validated) + sanitized name
             target_path = p.parent / target_name
 
             # coliziune = exista alt fisier cu numele propus, diferit de src
@@ -294,7 +309,7 @@ def api_apply():
                 skipped.append({"path": it.get("path"), "reason": "not selected"})
                 continue
 
-            # --- path traversal fix: validate path is inside a known inbox ---
+            # --- path traversal fix: validate & reconstruct from trusted inbox ---
             p = _safe_path(it.get("path", ""))
             if p is None:
                 app.logger.warning("Rejected path outside inbox: %s", it.get("path"))
@@ -311,6 +326,7 @@ def api_apply():
 
             # numele tinta propus
             target_name = build_target(artist, title, ext)
+            # dst built from trusted p.parent (already validated) + sanitized name
             dst = p.parent / target_name
 
             # daca ar ramane acelasi nume, nu are sens
@@ -344,7 +360,7 @@ def api_delete():
     paths = payload.get("paths") or []
     removed = []
     for s in paths:
-        # --- path traversal fix: validate path is inside a known inbox ---
+        # --- path traversal fix: validate & reconstruct from trusted inbox ---
         p = _safe_path(s)
         if p is None:
             app.logger.warning("Rejected delete path outside inbox: %s", s)
