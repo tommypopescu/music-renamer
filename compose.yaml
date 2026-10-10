@@ -1,16 +1,22 @@
 services:
   music-renamer:
-    build:
-      context: .
-      dockerfile: docker/Dockerfile
+    image: ghcr.io/tommypopescu/muserrenamer:latest
     container_name: music-renamer
     restart: unless-stopped
     environment:
-      MUSIC_INBOX: /inbox
-      MUSIC_OUTDIR: /library      # dacă vrei in-place, pune MUSIC_OUTDIR=/inbox
-      RENAME_TEMPLATE: "{artist} - {title}"   # șablon
+      BEETSDIR: /config
+      # List every inbox path separated by colons.
+      # Each path must have a matching volume mount below.
+      MUSIC_INBOXES: /inbox/1:/inbox/2
+      MUSIC_OUTDIR: /library
+      RENAME_TEMPLATE: "{artist} - {title}"
     volumes:
-      - /mnt/music-inbox:/inbox
-      - /mnt/music-library:/library
+      - ./data/config:/config
+      # Mount each source folder to a distinct sub-path under /inbox/.
+      # Add or remove lines here; update MUSIC_INBOXES accordingly.
+      - /srv/mergerfs/3TB_merger/downloads/downloads/music/complete:/inbox/1
+      - /srv/mergerfs/3TB_merger/downloads/downloads/music/Muzica/club:/inbox/2
+      # - /path/to/another/folder:/inbox/3
+      - /srv/mergerfs/3TB_merger/downloads/downloads/music/library:/library
     ports:
-      - "8085:8080"
+      - "8085:8080"   # expose only in LAN; restrict on firewall/router
