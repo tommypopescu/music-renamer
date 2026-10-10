@@ -1,37 +1,37 @@
-# Music Renamer - Development Context
+# Music Renamer — Development Context
 
-This document provides comprehensive context for developers working on this project. It's designed to help AI assistants and human developers quickly understand the codebase structure, patterns, and conventions.
+This document provides comprehensive context for developers and AI assistants
+working on this project. Read this before making any changes.
 
 ---
 
 ## Project Overview
 
-**Music Renamer** is a LAN-only web application for batch renaming audio files. It provides a web UI for scanning, editing metadata, and renaming files in-place without modifying embedded tags.
+**Music Renamer** is a LAN-only web application for batch renaming audio files.
+It provides a web UI for scanning, editing metadata, and renaming files **in-place**
+(no tag writing, no external API, no database).
 
 ### Core Philosophy
-- **No database**: All operations are stateless and file-based
-- **In-place operations**: Files are renamed in their original directory
-- **Manual control**: User explicitly selects which files to process
-- **Safety first**: Confirmations, collision detection, and detailed reporting
+- **No database** — all operations are stateless and file-based
+- **In-place operations** — files are renamed within their original directory
+- **Manual control** — user explicitly selects which files to process
+- **Safety first** — confirmations, collision detection, detailed reporting
+- **LAN only** — no authentication; expose only on trusted networks
 
 ---
 
 ## Technology Stack
 
-### Backend
-- **Python 3.12+**
-- **Flask 3.0.2**: Web framework
-- **Gunicorn 21.2.0**: WSGI server for production
-- **Mutagen 1.47.0**: Audio metadata reading (fallback only)
-
-### Frontend
-- **Vanilla JavaScript**: No frameworks, pure ES6+
-- **HTML5 + CSS3**: Modern, responsive design
-- **Dark mode support**: Via CSS `prefers-color-scheme`
-
-### Deployment
-- **Docker**: Containerized deployment
-- **Docker Compose**: Orchestration
+| Layer | Technology | Version |
+|-------|-----------|--------|
+| Backend | Python | 3.12 |
+| Web framework | Flask | 3.1.3 |
+| WSGI server | Gunicorn | 26.2.0 |
+| Tag reading (fallback) | Mutagen | 1.47.0 |
+| Frontend | Vanilla JS + HTML5 + CSS3 | — |
+| Container base | `python:3.12-slim` (Debian 13) | — |
+| Init process | tini | system |
+| Deployment | Docker + Docker Compose | — |
 
 ---
 
@@ -40,19 +40,25 @@ This document provides comprehensive context for developers working on this proj
 ```
 .
 ├── app/
-│   ├── app.py                 # Flask backend (main application)
+│   ├── app.py                    # Flask backend (main application)
 │   └── templates/
-│       └── index.html         # Single-page UI (HTML + CSS + JS)
+│       └── index.html            # Single-page UI (HTML + CSS + JS)
 ├── docker/
-│   ├── Dockerfile             # Container image definition
-│   └── entrypoint.sh          # Container startup script
-├── beets/                     # (Optional) Beets integration
-├── .github/                   # GitHub workflows
-├── .vscode/                   # VS Code settings
-├── compose.yaml               # Docker Compose configuration
-├── requirements.txt           # Python dependencies
-├── README (1).md              # Main documentation
-└── CONTEXT.md                 # This file
+│   ├── Dockerfile                # Container image definition
+│   └── entrypoint.sh             # Container startup script
+├── .github/
+│   ├── workflows/
+│   │   └── build-push.yml        # CI/CD: build → push → Trivy → Cosign
+│   └── dependabot.yml            # Auto-update GitHub Action versions
+├── docs/
+│   └── github-actions-cicd-guide.md  # Reutilizable CI/CD guide
+├── beets/                        # (Optional) Beets config snippets
+├── .trivyignore                  # CVE exceptions for Trivy scanner
+├── compose.yaml                  # Docker Compose for OMV deployment
+├── requirements.txt              # Python dependencies (all pinned)
+├── CHANGELOG.md                  # Version history
+├── CONTEXT.md                    # This file
+└── README.md                     # User-facing documentation
 ```
 
 ---
@@ -60,393 +66,302 @@ This document provides comprehensive context for developers working on this proj
 ## Key Files Deep Dive
 
 ### `app/app.py` (Backend)
-**Purpose**: Flask API server handling all backend operations
 
-**Key Functions**:
-- `parse_artist_title_from_filename()`: Extracts metadata from filename using heuristics
-- `sanitize_filename()`: Removes forbidden filesystem characters
-- `scan_folder()`: Recursively scans for audio files
-- `build_rename_plan()`: Generates rename operations with collision detection
-- `apply_renames()`: Executes file renames with conflict resolution
+**Environment variables read at startup**:
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `MUSIC_INBOXES` | `/inbox` | Colon-separated list of source folders |
+| `MUSIC_INBOX` | `/inbox` | Legacy single-path fallback (ignored when `MUSIC_INBOXES` is set) |
+| `RENAME_TEMPLATE` | `{artist} - {title}` | Filename pattern |
+
+**Key globals**:
+- `INBOXES: list[str]` — parsed from `MUSIC_INBOXES`
+- `_INBOX_ROOTS: list[Path]` — resolved at startup, used by `_safe_path()`
+- `TEMPLATE: str` — rename pattern
+
+**Security helper — `_safe_path(raw: str) -> Path | None`**:
+- Validates a user-supplied path by resolving it and checking it falls inside a
+  known inbox root.
+- **Reconstructs** the final path from `inbox_root` (trusted) + `rel` (verified
+  relative suffix) — this breaks the tainted-data flow that CodeQL CWE-22 requires.
+- Returns `None` for any path outside all inboxes.
+- Used in: `/api/preview`, `/api/apply`, `/api/delete`.
 
 **API Endpoints**:
-- `GET /api/settings`: Returns rename template configuration
-- `POST /api/scan`: Scans inbox folder and returns file list
-- `POST /api/preview`: Previews rename operations
-- `POST /api/apply`: Executes rename operations
-- `POST /api/delete`: Deletes specified files
 
-**Important Patterns**:
-- All endpoints return JSON (even errors)
-- File operations use `os.replace()` for atomic renames
-- Collision resolution appends `(1)`, `(2)`, etc.
-- Filename parsing prioritizes filename over embedded tags
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/api/settings` | Returns `template` + `inboxes` list |
+| `POST` | `/api/scan` | Scans all INBOXES, returns file list |
+| `POST` | `/api/preview` | Compute rename plan, mark collisions |
+| `POST` | `/api/apply` | Execute in-place renames |
+| `POST` | `/api/delete` | Delete specified files |
 
-### `app/templates/index.html` (Frontend)
-**Purpose**: Single-page application with embedded CSS and JavaScript
+**Error handling pattern**: every exception is logged with
+`app.logger.exception(...)` server-side; HTTP responses return only generic
+messages (no `str(e)` exposure).
 
-**Architecture**:
-```
-HTML Structure
-├── Toolbar (buttons + search)
-├── Filter Stats
-├── Items Table
-│   ├── Checkbox column
-│   ├── File path
-│   ├── Artist (editable)
-│   ├── Title (editable)
-│   ├── Extension
-│   ├── Date/Time (sortable)
-│   └── Preview name (live)
-└── Output (JSON response display)
+---
+
+### `docker/Dockerfile`
+
+```dockerfile
+FROM python:3.12-slim
+RUN apt-get update && apt-get upgrade -y   # pull all Debian security patches
+RUN pip install --upgrade pip              # pip itself may have CVEs
+COPY requirements.txt && pip install -r requirements.txt
+# tini as PID 1 for proper signal handling
+ENTRYPOINT ["/usr/bin/tini", "--"]
+CMD ["/app/entrypoint.sh"]
 ```
 
-**JavaScript State Management**:
-- `CURRENT_ITEMS`: All scanned files (master list)
-- `FILTERED_ITEMS`: Currently visible files after search filter
-- `SEARCH_TERM`: Current search query
-- `SORT_DESC`: Sort direction for date/time
-- `RENAME_TEMPLATE`: Filename template from server
+**Why `apt-get upgrade -y`**: the base `python:3.12-slim` image is not rebuilt
+daily. Running `upgrade` pulls any OS-level security patches available at build
+time, reducing the CVE surface that Trivy sees.
 
-**Key JavaScript Functions**:
-- `scan()`: Fetches file list from server
-- `filterItems()`: Applies search filter to items
-- `renderItems()`: Renders table rows with event listeners
-- `buildPreviewName()`: Client-side preview generation
-- `deleteSelected()`: Deletes selected files with confirmations
-- `toggleSortByDate()`: Toggles date/time sorting
-- `syncHeaderChk()`: Syncs "select all" checkbox state
+---
 
-**Event Flow**:
-1. User action (click, input, etc.)
-2. Update `CURRENT_ITEMS` state
-3. Apply filter → `FILTERED_ITEMS`
-4. Re-render table
-5. Attach event listeners to new DOM elements
+### `docker/entrypoint.sh`
+
+```bash
+_INBOXES="${MUSIC_INBOXES:-${MUSIC_INBOX:-/inbox}}"
+IFS=':' read -ra _DIRS <<< "${_INBOXES}"
+for _DIR in "${_DIRS[@]}"; do
+  mkdir -p "${_DIR}"
+done
+mkdir -p /library
+exec gunicorn -b 0.0.0.0:8080 app.app:app
+```
+
+Creates every inbox directory and `/library` at startup, then launches Gunicorn.
+
+---
+
+### `requirements.txt`
+
+```
+Flask==3.1.3
+gunicorn==26.2.0
+mutagen==1.47.0
+# pinned to fix transitive CVEs
+msgpack==1.2.1
+setuptools==83.0.0
+urllib3==2.8.0
+```
+
+The last three are **transitive dependencies** pinned explicitly to override
+old versions that may appear in the dependency graph of other packages.
+
+---
+
+### `compose.yaml` (reference / example)
+
+```yaml
+services:
+  music-renamer:
+    image: ghcr.io/tommypopescu/muserrenamer:latest
+    environment:
+      MUSIC_INBOXES: /inbox/1:/inbox/2     # colon-separated
+      RENAME_TEMPLATE: "{artist} - {title}"
+    volumes:
+      - ./data/config:/config
+      - /host/path/complete:/inbox/1
+      - /host/path/Muzica/Club:/inbox/2
+      - /host/path/library:/library
+    ports:
+      - "8085:8080"
+```
+
+**Rule**: every path in `MUSIC_INBOXES` must have a matching volume mount.  
+**Rule**: each mount must use a **distinct sub-path** (not the same `/inbox`).
+
+---
+
+### `.trivyignore`
+
+Suppresses CVEs that Trivy reports but that have no actionable fix:
+- **OS-level** (Debian 13): `util-linux`, `glibc`, `ncurses`, `systemd`,
+  `sqlite`, etc. — `Status: affected`, no `Fixed Version`.
+- **Python false positives**: `msgpack`, `setuptools`, `urllib3` CVEs
+  detected from vendored metadata inside other packages. Actual installed
+  versions are patched; these are not exploitable.
+
+See `docs/github-actions-cicd-guide.md §5` for the full management policy.
+
+---
+
+### `.github/workflows/build-push.yml`
+
+Full pipeline on every push to `main`:
+1. `actions/checkout@v7`
+2. `docker/login-action@v4` — GHCR auth via `GITHUB_TOKEN`
+3. `docker/build-push-action@v7` — build + push `:latest` + `:sha`
+4. `aquasecurity/trivy-action@v0.36.0` — blocking scan (CRITICAL+HIGH)
+5. `aquasecurity/trivy-action@v0.36.0` — SARIF → Security tab
+6. `github/codeql-action/upload-sarif@v4`
+7. `sigstore/cosign-installer@v3` + `cosign sign` — keyless signing
+
+See `docs/github-actions-cicd-guide.md` for the complete annotated template.
+
+---
+
+### `.github/dependabot.yml`
+
+Weekly PRs for `github-actions` ecosystem. Merging strategy:
+- Squash merge after checking compatibility score and release notes.
+- Major version bumps: read the action's CHANGELOG for breaking changes first.
 
 ---
 
 ## Data Flow
 
-### Scan Operation
+### Scan
 ```
-User clicks "Scan"
-    ↓
-Frontend: POST /api/scan
-    ↓
-Backend: Scan /inbox recursively
-    ↓
-Backend: Parse filename → Artist/Title
-    ↓
-Backend: Fallback to tags if parsing failed
-    ↓
-Backend: Return items with metadata
-    ↓
-Frontend: Store in CURRENT_ITEMS
-    ↓
-Frontend: Apply filter → FILTERED_ITEMS
-    ↓
-Frontend: Render table
+POST /api/scan
+  for each inbox in INBOXES:
+    rglob('*') → filter by SUPPORT_EXT
+    parse_tags(path) → (artist, title)
+    stat() → mtime
+  return items[]
 ```
 
-### Rename Operation
+### Rename
 ```
-User edits Artist/Title in table
-    ↓
-Frontend: Update CURRENT_ITEMS[i].artist/title
-    ↓
-Frontend: Live update preview column
-    ↓
-User clicks "Preview rename"
-    ↓
-Frontend: POST /api/preview with CURRENT_ITEMS
-    ↓
-Backend: Generate rename plan
-    ↓
-Backend: Check for collisions
-    ↓
-Backend: Return preview with collision flags
-    ↓
-User clicks "Apply rename"
-    ↓
-Frontend: POST /api/apply with CURRENT_ITEMS
-    ↓
-Backend: Execute renames with conflict resolution
-    ↓
-Backend: Return moved/skipped/failed lists
-    ↓
-Frontend: Display results
-    ↓
-Frontend: Auto-scan to refresh
+POST /api/preview  ─→  validate paths (_safe_path), build target names
+POST /api/apply    ─→  validate paths (_safe_path), os.replace() atomic rename
 ```
 
-### Delete Operation
+### Delete
 ```
-User selects files via checkboxes
-    ↓
-User clicks "Delete selected"
-    ↓
-Frontend: Filter CURRENT_ITEMS for selected=true
-    ↓
-Frontend: For each selected file:
-    ├─ Show confirmation dialog with filename
-    ├─ If confirmed: Add to pathsToDelete[]
-    └─ If cancelled: Skip this file
-    ↓
-Frontend: POST /api/delete with pathsToDelete
-    ↓
-Backend: Delete files
-    ↓
-Backend: Return removed list
-    ↓
-Frontend: Display results
-    ↓
-Frontend: Auto-scan to refresh
+POST /api/delete   ─→  validate paths (_safe_path), path.unlink()
 ```
 
 ---
 
-## Configuration
+## Supported Audio Formats
 
-### Environment Variables
-- `MUSIC_INBOX`: Folder to scan (default: `/inbox`)
-- `RENAME_TEMPLATE`: Filename pattern (default: `"{artist} - {title}"`)
+`.mp3` `.flac` `.m4a` `.ogg` `.wav` `.opus` `.aac`
 
-### Supported Audio Formats
-`.mp3`, `.flac`, `.m4a`, `.ogg`, `.wav`, `.opus`, `.aac`
+---
 
-### Filename Sanitization
-Only these characters are replaced with `_`:
-```
-\ / : * ? " < > |
-```
-All other characters (parentheses, quotes, dashes, etc.) are preserved.
+## Filename Parsing Logic
+
+`parse_tags()` in `app.py` uses this priority:
+
+1. **Filename stem** → strip leading track numbers → strip trailing site tails
+   (`- www.domain.com`) → split on ` - `.
+2. **Embedded tags** (Mutagen) — only as fallback if step 1 yields nothing.
+3. **Defaults**: `"Unknown Artist"` / `"Unknown Title"`.
+
+Regex constants:
+- `SITE_TAIL_RE` — matches trailing `- www.site.tld` patterns.
+- `BAD_TAG_RE` — detects tag values that are URLs (reject as data).
 
 ---
 
 ## Common Development Tasks
 
-### Adding a New Feature to the UI
+### Add a new inbox
+1. In `compose.yaml`: add a volume mount `/host/path:/inbox/N`.
+2. In `compose.yaml`: append `:/inbox/N` to `MUSIC_INBOXES`.
+3. `docker compose up -d` — no image rebuild needed.
 
-1. **Add UI element** in `index.html` (HTML section)
-2. **Add styling** in `<style>` section
-3. **Add JavaScript function** in `<script>` section
-4. **Wire up event handler** (onclick, oninput, etc.)
-5. **Update state** (`CURRENT_ITEMS` or new state variable)
-6. **Re-render** if needed (`renderItems()`)
+### Add a new API endpoint
+```python
+@app.post("/api/newfeature")
+def api_newfeature():
+    try:
+        payload = request.get_json(force=True) or {}
+        # validate paths with _safe_path() if handling file paths
+        return jsonify({"ok": True, "result": ...})
+    except Exception:
+        app.logger.exception("Fatal error in /api/newfeature")
+        return jsonify({"ok": False, "error": "Operation failed."}), 500
+```
 
-### Adding a New API Endpoint
+### Update a CVE suppression
+Edit `.trivyignore` — add a CVE ID and a comment with the date and reason.
+Remove the entry once the upstream package ships a fix.
 
-1. **Define route** in `app/app.py`:
-   ```python
-   @app.route('/api/newfeature', methods=['POST'])
-   def new_feature():
-       data = request.get_json()
-       # Process data
-       return jsonify({"ok": True, "result": result})
-   ```
-
-2. **Add frontend function** in `index.html`:
-   ```javascript
-   async function callNewFeature() {
-       const j = await call('/api/newfeature', { data: 'value' });
-       setOut(j);
-   }
-   ```
-
-3. **Add button** to toolbar:
-   ```html
-   <button class="btn" onclick="callNewFeature()">New Feature</button>
-   ```
-
-### Modifying Filename Parsing Logic
-
-Edit `parse_artist_title_from_filename()` in `app/app.py`:
-- This function uses regex patterns to extract artist/title
-- Priority: filename parsing > embedded tags (fallback only)
-- Test with various filename formats
-
-### Changing Rename Template
-
-1. **Server-side**: Set `RENAME_TEMPLATE` environment variable
-2. **Client-side**: Template is fetched via `/api/settings`
-3. **Preview**: `buildPreviewName()` uses template for live preview
+### Upgrade a dependency
+1. Change the version in `requirements.txt`.
+2. Push to `main` — the CI pipeline rebuilds the image and Trivy rescans.
+3. If Trivy still reports the CVE: verify with `pip show PACKAGE` inside the
+   new container.
 
 ---
 
-## UI Components Reference
+## Debugging
 
-### Buttons
-```html
-<button class="btn">Normal</button>
-<button class="btn primary">Primary (blue)</button>
-<button class="btn danger">Danger (red)</button>
+```bash
+# Container logs
+docker logs --tail=200 music-renamer
+
+# Shell inside container
+docker exec -it music-renamer bash
+
+# Check actual installed package versions
+docker exec music-renamer pip show flask gunicorn setuptools
+
+# Test API directly
+curl -s -X POST http://HOST:8085/api/scan | python3 -m json.tool
+
+# Verify Cosign signature
+cosign verify ghcr.io/tommypopescu/muserrenamer:latest \
+  --certificate-identity-regexp="https://github.com/tommypopescu/.*" \
+  --certificate-oidc-issuer="https://token.actions.githubusercontent.com"
 ```
 
-### CSS Variables (Theme)
-```css
---bg: Background color
---fg: Foreground (text) color
---muted: Muted text color
---panel: Panel/input background
---border: Border color
---accent: Primary accent (blue)
---danger: Danger color (red)
---mono-bg: Monospace background (output)
---mono-fg: Monospace foreground (output)
-```
+---
 
-### Table Structure
-```html
-<table id="tbl">
-  <thead>
-    <tr>
-      <th class="w-checkbox">Checkbox</th>
-      <th class="w-path">File path</th>
-      <th class="w-artist">Artist (editable)</th>
-      <th class="w-title">Title (editable)</th>
-      <th>Extension</th>
-      <th class="w-date sortable">Date/Time</th>
-      <th class="w-prev">Preview name</th>
-    </tr>
-  </thead>
-  <tbody><!-- Rendered by renderItems() --></tbody>
-</table>
-```
+## Security Posture
+
+| Control | Status | Detail |
+|---------|--------|--------|
+| Path traversal prevention | ✅ | `_safe_path()` reconstructs from trusted roots |
+| Exception exposure | ✅ | Generic HTTP messages; full trace in server log only |
+| Image vulnerability scan | ✅ | Trivy CRITICAL+HIGH blocks merge to main |
+| Image signing | ✅ | Cosign keyless via GitHub OIDC + Rekor |
+| Dependency updates | ✅ | Dependabot weekly PRs |
+| OS patches at build time | ✅ | `apt-get upgrade -y` in Dockerfile |
+| No authentication | ⚠️ | By design — LAN only; add reverse-proxy Basic Auth if needed |
 
 ---
 
 ## Testing Checklist
 
-When making changes, verify:
-
-- [ ] **Scan**: Files are listed correctly
-- [ ] **Filter**: Search works for filename, artist, title
-- [ ] **Edit**: Artist/Title edits update preview live
-- [ ] **Sort**: Date/Time sorting works (toggle ▼/▲)
-- [ ] **Select**: Select all/none works with filtered items
-- [ ] **Preview**: Shows correct target names and collisions
-- [ ] **Rename**: Files are renamed correctly in-place
-- [ ] **Delete**: Selected files are deleted with confirmations
-- [ ] **Conflicts**: Name collisions are resolved with (1), (2), etc.
-- [ ] **Errors**: Error messages are clear and actionable
-- [ ] **Dark mode**: UI looks good in both light and dark themes
+- [ ] Scan lists files from all configured inboxes
+- [ ] Inbox column shows correct source folder per file
+- [ ] Search filters by filename / artist / title
+- [ ] Artist/Title edits update live preview
+- [ ] Date/Time sort toggle works
+- [ ] Preview shows correct target names and marks collisions
+- [ ] Rename moves files in-place (same directory)
+- [ ] Conflict resolution appends `(1)`, `(2)`
+- [ ] Delete prompts per-file and removes only confirmed files
+- [ ] Paths outside inbox are rejected (test with `../../../etc/passwd`)
+- [ ] Dark mode renders correctly
 
 ---
 
-## Debugging Tips
-
-### Backend Issues
-```bash
-# View container logs
-docker logs --tail=200 music-renamer
-
-# Check file permissions
-ls -la /path/to/inbox
-
-# Test API directly
-curl -X POST http://localhost:8080/api/scan \
-  -H "Content-Type: application/json" \
-  -d '{}'
-```
-
-### Frontend Issues
-- Open browser DevTools (F12)
-- Check Console for JavaScript errors
-- Check Network tab for API responses
-- Inspect `CURRENT_ITEMS` and `FILTERED_ITEMS` in console
-
-### Common Issues
-1. **"Invalid JSON response"**: Check backend logs for Python exceptions
-2. **Files not renaming**: Check permissions, verify file exists
-3. **Preview doesn't match result**: Check `RENAME_TEMPLATE` consistency
-4. **Search not working**: Verify `SEARCH_TERM` is set correctly
-
----
-
-## Code Style Guidelines
-
-### Python (Backend)
-- Use 4 spaces for indentation
-- Follow PEP 8 conventions
-- Use type hints where helpful
-- Keep functions focused and small
-- Always return JSON from API endpoints
-
-### JavaScript (Frontend)
-- Use 2 spaces for indentation
-- Use `const` and `let`, avoid `var`
-- Use async/await for API calls
-- Keep functions pure when possible
-- Use descriptive variable names
-
-### HTML/CSS
-- Use semantic HTML5 elements
-- Use CSS custom properties for theming
-- Keep styles in `<style>` section
-- Use BEM-like naming for classes
-
----
-
-## Security Considerations
-
-⚠️ **This application is designed for LAN-only use**
-
-- No authentication/authorization
-- No input validation beyond filename sanitization
-- Delete endpoint accepts absolute paths
-- Expose only on trusted networks
-- Consider reverse proxy with Basic Auth for additional security
-
----
-
-## Performance Notes
-
-- **No pagination**: All files loaded at once (suitable for <10,000 files)
-- **Client-side filtering**: Fast for typical music collections
-- **Atomic renames**: `os.replace()` is atomic within same filesystem
-- **No database**: Stateless, no persistence overhead
-
----
-
-## Future Enhancement Ideas
-
-- [ ] Batch edit (apply same artist to multiple files)
-- [ ] Undo last rename operation
-- [ ] Export/import rename plans
-- [ ] Regex-based bulk find/replace
-- [ ] Custom filename templates per session
-- [ ] Drag-and-drop file upload
-- [ ] Audio preview player
-- [ ] Tag writing (currently read-only)
-- [ ] Multi-folder support
-- [ ] Pagination for large collections
-
----
-
-## Quick Reference: File Locations
+## Quick Reference
 
 | What | Where |
 |------|-------|
 | API endpoints | `app/app.py` |
-| UI layout | `app/templates/index.html` (HTML section) |
-| Styles | `app/templates/index.html` (`<style>` section) |
-| JavaScript | `app/templates/index.html` (`<script>` section) |
-| Dependencies | `requirements.txt` |
-| Docker config | `docker/Dockerfile`, `compose.yaml` |
-| Documentation | `README (1).md`, `CONTEXT.md` |
+| UI layout + JS | `app/templates/index.html` |
+| Python deps | `requirements.txt` |
+| Docker build | `docker/Dockerfile` |
+| Container startup | `docker/entrypoint.sh` |
+| Compose (OMV) | `compose.yaml` |
+| CI/CD pipeline | `.github/workflows/build-push.yml` |
+| CI/CD guide | `docs/github-actions-cicd-guide.md` |
+| CVE suppressions | `.trivyignore` |
+| Version history | `CHANGELOG.md` |
+| User docs | `README.md` |
 
 ---
 
-## Contact & Support
-
-For issues or questions:
-1. Check logs: `docker logs music-renamer`
-2. Review this context document
-3. Check `README (1).md` for user documentation
-4. Verify environment variables and volume mounts
-
----
-
-**Last Updated**: 2026-04-10  
-**Version**: 1.1 (with delete selected feature)
+**Last updated**: 2026-10-10  
+**Version**: 1.3.0
