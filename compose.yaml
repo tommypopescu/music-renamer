@@ -15,7 +15,7 @@ services:
       # Mount each source folder to a distinct sub-path under /inbox/.
       # Add or remove lines here; update MUSIC_INBOXES accordingly.
       - /srv/mergerfs/3TB_merger/downloads/downloads/music/complete:/inbox/1
-      - /srv/mergerfs/3TB_merger/downloads/downloads/music/Muzica/club:/inbox/2
+      - /srv/mergerfs/3TB_merger/downloads/downloads/music/Muzica/Club:/inbox/2
       # - /path/to/another/folder:/inbox/3
       - /srv/mergerfs/3TB_merger/downloads/downloads/music/library:/library
     ports:
