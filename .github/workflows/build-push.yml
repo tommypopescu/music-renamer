@@ -10,7 +10,9 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      packages: write   # required to push to GHCR
+      packages: write       # push to GHCR
+      id-token: write       # Cosign keyless signing via GitHub OIDC
+      security-events: write # upload Trivy SARIF to GitHub Security tab
 
     steps:
       - name: Checkout
@@ -24,6 +26,7 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Build & Push
+        id: build
         uses: docker/build-push-action@v6
         with:
           context: .
@@ -33,3 +36,41 @@ jobs:
           tags: |
             ghcr.io/${{ github.repository_owner }}/muserrenamer:latest
             ghcr.io/${{ github.repository_owner }}/muserrenamer:${{ github.sha }}
+
+      # -----------------------------------------------------------------------
+      # Trivy — scan imaginea dupa push
+      # Blocheaza la CRITICAL; HIGH e raportat in Security tab dar nu blocheaza
+      # -----------------------------------------------------------------------
+      - name: Trivy scan (CRITICAL blocks, HIGH reported)
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          image-ref: ghcr.io/${{ github.repository_owner }}/muserrenamer:${{ github.sha }}
+          format: sarif
+          output: trivy-results.sarif
+          severity: CRITICAL,HIGH
+          exit-code: '1'        # blocheaza workflow la CRITICAL
+          ignore-unfixed: true  # ignora CVE-uri fara fix disponibil
+          vuln-type: os,library
+
+      - name: Upload Trivy results to GitHub Security tab
+        if: always()            # upload chiar daca Trivy a blocat
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: trivy-results.sarif
+
+      # -----------------------------------------------------------------------
+      # Cosign — semneaza imaginea keyless via GitHub OIDC
+      # Verifica pe OMV cu:
+      #   cosign verify ghcr.io/tommypopescu/muserrenamer:latest \
+      #     --certificate-identity-regexp="https://github.com/tommypopescu/.*" \
+      #     --certificate-oidc-issuer="https://token.actions.githubusercontent.com"
+      # -----------------------------------------------------------------------
+      - name: Install Cosign
+        uses: sigstore/cosign-installer@v3
+
+      - name: Sign image with Cosign (keyless)
+        run: |
+          cosign sign --yes \
+            ghcr.io/${{ github.repository_owner }}/muserrenamer@${{ steps.build.outputs.digest }}
+        env:
+          COSIGN_EXPERIMENTAL: "1"
