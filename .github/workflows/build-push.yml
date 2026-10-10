@@ -38,30 +38,20 @@ jobs:
             ghcr.io/${{ github.repository_owner }}/muserrenamer:${{ github.sha }}
 
       # -----------------------------------------------------------------------
-      # Trivy — afiseaza TOATE CVE-urile in log (nu blocheaza) ca sa vedem lista
+      # Trivy — scan cu .trivyignore pentru CVE-uri fara fix in Debian 13
+      # Blocheaza la CRITICAL sau HIGH cu fix disponibil
+      # OS CVE-uri fara patch sunt in .trivyignore (tracked, re-evaluate periodic)
       # -----------------------------------------------------------------------
-      - name: Trivy scan (debug - show all CVEs)
-        uses: aquasecurity/trivy-action@v0.36.0
-        with:
-          image-ref: ghcr.io/${{ github.repository_owner }}/muserrenamer:${{ github.sha }}
-          format: table
-          severity: CRITICAL,HIGH,MEDIUM
-          exit-code: '0'
-          ignore-unfixed: false
-          vuln-type: os,library
-
-      # -----------------------------------------------------------------------
-      # Trivy — SARIF pentru Security tab (nu blocheaza momentan)
-      # -----------------------------------------------------------------------
-      - name: Trivy scan (SARIF)
+      - name: Trivy scan (CRITICAL+HIGH blocks, .trivyignore for unfixed OS CVEs)
         uses: aquasecurity/trivy-action@v0.36.0
         with:
           image-ref: ghcr.io/${{ github.repository_owner }}/muserrenamer:${{ github.sha }}
           format: sarif
           output: trivy-results.sarif
           severity: CRITICAL,HIGH
-          exit-code: '0'
-          ignore-unfixed: true
+          exit-code: '1'
+          ignore-unfixed: false
+          trivyignores: .trivyignore
           vuln-type: os,library
 
       - name: Upload Trivy results to GitHub Security tab
@@ -72,6 +62,10 @@ jobs:
 
       # -----------------------------------------------------------------------
       # Cosign — semneaza imaginea keyless via GitHub OIDC
+      # Verifica pe OMV cu:
+      #   cosign verify ghcr.io/tommypopescu/muserrenamer:latest \
+      #     --certificate-identity-regexp="https://github.com/tommypopescu/.*" \
+      #     --certificate-oidc-issuer="https://token.actions.githubusercontent.com"
       # -----------------------------------------------------------------------
       - name: Install Cosign
         uses: sigstore/cosign-installer@v3
