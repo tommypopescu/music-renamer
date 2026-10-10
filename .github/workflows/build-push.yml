@@ -38,10 +38,22 @@ jobs:
             ghcr.io/${{ github.repository_owner }}/muserrenamer:${{ github.sha }}
 
       # -----------------------------------------------------------------------
-      # Trivy — scan imaginea dupa push
-      # Blocheaza la CRITICAL; HIGH e raportat in Security tab dar nu blocheaza
+      # Trivy — pas 1: afiseaza tabelul in log ca sa vedem CVE-urile exacte
       # -----------------------------------------------------------------------
-      - name: Trivy scan (CRITICAL blocks, HIGH reported)
+      - name: Trivy scan (table output for visibility)
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          image-ref: ghcr.io/${{ github.repository_owner }}/muserrenamer:${{ github.sha }}
+          format: table
+          severity: CRITICAL,HIGH
+          exit-code: '0'        # nu blocheaza, doar afiseaza
+          ignore-unfixed: true
+          vuln-type: os,library
+
+      # -----------------------------------------------------------------------
+      # Trivy — pas 2: genereaza SARIF pentru Security tab si blocheaza la CRITICAL
+      # -----------------------------------------------------------------------
+      - name: Trivy scan (SARIF + block on CRITICAL)
         uses: aquasecurity/trivy-action@v0.36.0
         with:
           image-ref: ghcr.io/${{ github.repository_owner }}/muserrenamer:${{ github.sha }}
@@ -49,21 +61,17 @@ jobs:
           output: trivy-results.sarif
           severity: CRITICAL,HIGH
           exit-code: '1'        # blocheaza workflow la CRITICAL
-          ignore-unfixed: true  # ignora CVE-uri fara fix disponibil
+          ignore-unfixed: true
           vuln-type: os,library
 
       - name: Upload Trivy results to GitHub Security tab
-        if: always()            # upload chiar daca Trivy a blocat
+        if: always()
         uses: github/codeql-action/upload-sarif@v4
         with:
           sarif_file: trivy-results.sarif
 
       # -----------------------------------------------------------------------
       # Cosign — semneaza imaginea keyless via GitHub OIDC
-      # Verifica pe OMV cu:
-      #   cosign verify ghcr.io/tommypopescu/muserrenamer:latest \
-      #     --certificate-identity-regexp="https://github.com/tommypopescu/.*" \
-      #     --certificate-oidc-issuer="https://token.actions.githubusercontent.com"
       # -----------------------------------------------------------------------
       - name: Install Cosign
         uses: sigstore/cosign-installer@v3
