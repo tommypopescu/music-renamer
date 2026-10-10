@@ -42,7 +42,7 @@ jobs:
       # Blocheaza la CRITICAL; HIGH e raportat in Security tab dar nu blocheaza
       # -----------------------------------------------------------------------
       - name: Trivy scan (CRITICAL blocks, HIGH reported)
-        uses: aquasecurity/trivy-action@0.75.0
+        uses: aquasecurity/trivy-action@v0.36.0
         with:
           image-ref: ghcr.io/${{ github.repository_owner }}/muserrenamer:${{ github.sha }}
           format: sarif
