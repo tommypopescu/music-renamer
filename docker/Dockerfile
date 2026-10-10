@@ -6,9 +6,12 @@ RUN apt-get update && apt-get upgrade -y && apt-get install -y --no-install-reco
 
 WORKDIR /app
 COPY requirements.txt /app/
-# Upgrade pip first to fix pip CVEs, then install app dependencies
-RUN pip install --no-cache-dir --upgrade pip && \
-    pip install --no-cache-dir -r requirements.txt
+
+# Upgrade pip separately to fix pip CVEs
+RUN pip install --no-cache-dir --upgrade pip
+
+# Install app dependencies
+RUN pip install --no-cache-dir -r requirements.txt
 
 COPY app/ /app/app/
 COPY docker/entrypoint.sh /app/entrypoint.sh
